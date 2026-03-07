@@ -379,27 +379,39 @@ function MiniMusicPlayer({
 }
 
 // ── Stats Dashboard ──────────────────────────────────────────────────────────
-function StatsDashboard({ history, allSubjects, subjectDot }) {
+function StatsDashboard({
+  history,
+  allSubjects,
+  subjectDot,
+  onClearAllData,
+  onClearToday,
+}) {
   const [range, setRange] = useState("year");
   const [selectedDay, setSelectedDay] = useState(null);
 
   const stats = useMemo(() => {
+    const safeHistory = (history || []).filter((s) => {
+      if (!s) return false;
+      if (!s.completedAt || typeof s.completedAt !== "string") return false;
+      return true;
+    });
+
     const today = new Date().toISOString().slice(0, 10);
-    const todaySessions = history.filter(
+    const todaySessions = safeHistory.filter(
       (s) => s.completedAt.startsWith(today) && s.type === "work",
     );
     const todayMins = todaySessions.reduce(
       (acc, s) => acc + (parseFloat(s.duration) || 0),
       0,
     );
-    const totalMins = history.reduce(
+    const totalMins = safeHistory.reduce(
       (acc, s) => acc + (parseFloat(s.duration) || 0),
       0,
     );
 
     const breakdownAll = allSubjects.map((name) => ({
       name,
-      value: history
+      value: safeHistory
         .filter((s) => s.subject === name && s.type === "work")
         .reduce((acc, s) => acc + (parseFloat(s.duration) || 0), 0),
       color: subjectDot(name),
@@ -416,7 +428,7 @@ function StatsDashboard({ history, allSubjects, subjectDot }) {
       const d = new Date(now);
       d.setDate(d.getDate() - (days - 1 - i));
       const ds = d.toISOString().slice(0, 10);
-      const count = history.filter(
+      const count = safeHistory.filter(
         (s) => s.completedAt.startsWith(ds) && s.type === "work",
       ).length;
       activity.push({ date: ds, count });
@@ -424,7 +436,7 @@ function StatsDashboard({ history, allSubjects, subjectDot }) {
 
     const dailyCounts = {};
     const dailyMins = {};
-    history
+    safeHistory
       .filter((s) => s.type === "work")
       .forEach((s) => {
         const date = s.completedAt.slice(0, 10);
@@ -439,20 +451,18 @@ function StatsDashboard({ history, allSubjects, subjectDot }) {
     );
     const peakDayMins = peakDayDate ? dailyMins[peakDayDate] : 0;
 
-    const uniqueDays = new Set(
-      history
-        .filter((s) => s.type === "work")
-        .map((s) => s.completedAt.slice(0, 10)),
-    ).size;
+    const uniqueDays = new Set(safeHistory
+      .filter((s) => s.type === "work")
+      .map((s) => s.completedAt.slice(0, 10))).size;
     const avgSessions =
       uniqueDays > 0
         ? (
-            history.filter((s) => s.type === "work").length / uniqueDays
+            safeHistory.filter((s) => s.type === "work").length / uniqueDays
           ).toFixed(1)
         : 0;
 
     const workDaySet = new Set(
-      history
+      safeHistory
         .filter((s) => s.type === "work")
         .map((s) => s.completedAt.slice(0, 10)),
     );
@@ -472,7 +482,9 @@ function StatsDashboard({ history, allSubjects, subjectDot }) {
       longestStreak = Math.max(longestStreak, sCur);
     });
     const todayISO = today;
-    const yestISO = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    const yestISO = new Date(Date.now() - 86400000)
+      .toISOString()
+      .slice(0, 10);
     let currentStreak = 0;
     const startDay = workDaySet.has(todayISO)
       ? todayISO
@@ -487,6 +499,55 @@ function StatsDashboard({ history, allSubjects, subjectDot }) {
       }
     }
 
+    // Simple consistency score over recent window (0–100)
+    const windowDays = 21;
+    let activeDays = 0;
+    for (let i = 0; i < windowDays; i++) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const ds = d.toISOString().slice(0, 10);
+      if (dailyCounts[ds]) activeDays++;
+    }
+    const consistencyScore =
+      windowDays > 0 ? Math.round((activeDays / windowDays) * 100) : 0;
+    let consistencyLabel = "Getting started";
+    if (consistencyScore >= 80) consistencyLabel = "Ultra consistent";
+    else if (consistencyScore >= 60) consistencyLabel = "Very steady";
+    else if (consistencyScore >= 40) consistencyLabel = "Finding rhythm";
+
+    // Subject minutes for recent windows
+    const weekWindowDays = 7;
+    const monthWindowDays = 30;
+    const todayDate = new Date();
+    const weekSubjectMap = {};
+    const monthSubjectMap = {};
+    safeHistory
+      .filter((s) => s.type === "work")
+      .forEach((s) => {
+        const dateStr = s.completedAt.slice(0, 10);
+        const d = new Date(dateStr + "T00:00:00Z");
+        const diffDays =
+          (todayDate.getTime() - d.getTime()) / 86400000;
+        const mins = parseFloat(s.duration) || 0;
+        const subj = s.subject || "Unknown";
+        if (diffDays >= 0 && diffDays < weekWindowDays) {
+          weekSubjectMap[subj] = (weekSubjectMap[subj] || 0) + mins;
+        }
+        if (diffDays >= 0 && diffDays < monthWindowDays) {
+          monthSubjectMap[subj] = (monthSubjectMap[subj] || 0) + mins;
+        }
+      });
+    const weekSubjects = allSubjects.map((name) => ({
+      name,
+      value: weekSubjectMap[name] || 0,
+      color: subjectDot(name),
+    }));
+    const monthSubjects = allSubjects.map((name) => ({
+      name,
+      value: monthSubjectMap[name] || 0,
+      color: subjectDot(name),
+    }));
+
     return {
       todaySessions,
       todayMins,
@@ -498,6 +559,11 @@ function StatsDashboard({ history, allSubjects, subjectDot }) {
       avgSessions,
       currentStreak,
       longestStreak,
+      consistencyScore,
+      consistencyWindowDays: windowDays,
+      consistencyLabel,
+      weekSubjects,
+      monthSubjects,
     };
   }, [history, allSubjects, subjectDot, range]);
 
@@ -544,6 +610,7 @@ function StatsDashboard({ history, allSubjects, subjectDot }) {
           justifyContent: "space-between",
           alignItems: "center",
           marginBottom: -8,
+          gap: 12,
         }}
       >
         <span
@@ -557,13 +624,33 @@ function StatsDashboard({ history, allSubjects, subjectDot }) {
         >
           Overview
         </span>
-        <button
-          className="btn-stats-tab"
-          onClick={exportCSV}
-          style={{ fontSize: 9, letterSpacing: "0.1em" }}
-        >
-          Export CSV
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          {onClearToday && (
+            <button
+              className="btn-stats-tab"
+              onClick={onClearToday}
+              style={{ fontSize: 9, letterSpacing: "0.1em" }}
+            >
+              Clear Today
+            </button>
+          )}
+          {onClearAllData && (
+            <button
+              className="btn-stats-tab"
+              onClick={onClearAllData}
+              style={{ fontSize: 9, letterSpacing: "0.1em" }}
+            >
+              Clear All
+            </button>
+          )}
+          <button
+            className="btn-stats-tab"
+            onClick={exportCSV}
+            style={{ fontSize: 9, letterSpacing: "0.1em" }}
+          >
+            Export CSV
+          </button>
+        </div>
       </div>
       <div
         style={{
@@ -607,6 +694,233 @@ function StatsDashboard({ history, allSubjects, subjectDot }) {
           <span className="stats-title">Best Streak</span>
           <span className="stats-value">{stats.longestStreak}</span>
           <span className="stats-label">Longest run</span>
+        </div>
+        <div className="stats-card">
+          <span className="stats-title">Consistency</span>
+          <span className="stats-value">
+            {stats.consistencyScore}
+            <span
+              style={{
+                fontSize: 12,
+                marginLeft: 2,
+                color: "#555",
+                fontWeight: 500,
+              }}
+            >
+              /100
+            </span>
+          </span>
+          <span className="stats-label">
+            {stats.consistencyLabel} · last {stats.consistencyWindowDays} days
+          </span>
+        </div>
+      </div>
+
+      {/* Today's session list + recent subject summaries */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "minmax(0, 1.2fr) minmax(0, 1fr)",
+          gap: 16,
+          alignItems: "stretch",
+        }}
+      >
+        <div className="stats-card">
+          <span className="stats-title">Today's Sessions</span>
+          {stats.todaySessions.length === 0 ? (
+            <span className="stats-label" style={{ marginTop: 8 }}>
+              No focus sessions logged today yet.
+            </span>
+          ) : (
+            <div
+              style={{
+                marginTop: 10,
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+                maxHeight: 200,
+                overflowY: "auto",
+              }}
+            >
+              {stats.todaySessions.map((s, i) => (
+                <div
+                  key={i}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    padding: "6px 10px",
+                    background: "#0f0f0f",
+                    borderRadius: 4,
+                    border: "1px solid #191919",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                    }}
+                  >
+                    <span
+                      style={{
+                        width: 5,
+                        height: 5,
+                        borderRadius: "50%",
+                        background: subjectDot(s.subject),
+                        flexShrink: 0,
+                        display: "inline-block",
+                      }}
+                    />
+                    <span
+                      style={{
+                        fontSize: 11,
+                        color: "#555",
+                        fontFamily: "'Syne', sans-serif",
+                        letterSpacing: "0.05em",
+                        textTransform: "uppercase",
+                      }}
+                    >
+                      {s.subject}
+                    </span>
+                  </div>
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: 12,
+                      alignItems: "center",
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontFamily: "'JetBrains Mono', monospace",
+                        fontSize: 11,
+                        color: "#3a3a3a",
+                      }}
+                    >
+                      {Math.round(parseFloat(s.duration) || 0)}m
+                    </span>
+                    <span
+                      style={{
+                        fontFamily: "'JetBrains Mono', monospace",
+                        fontSize: 9,
+                        color: "#252525",
+                      }}
+                    >
+                      {new Date(s.completedAt).toLocaleTimeString("en-US", {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="stats-card">
+          <span className="stats-title">Subjects — Recent Focus</span>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 10,
+              marginTop: 8,
+            }}
+          >
+            {[
+              {
+                label: "Last 7 days",
+                data: stats.weekSubjects,
+              },
+              {
+                label: "Last 30 days",
+                data: stats.monthSubjects,
+              },
+            ].map(({ label, data }) => {
+              const nonZero = data.filter((s) => s.value > 0);
+              const top = (nonZero.length ? nonZero : data)
+                .slice()
+                .sort((a, b) => b.value - a.value)
+                .slice(0, 3);
+              return (
+                <div key={label}>
+                  <div
+                    style={{
+                      fontSize: 10,
+                      color: "#2a2a2a",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.08em",
+                      marginBottom: 4,
+                    }}
+                  >
+                    {label}
+                  </div>
+                  {top.length === 0 || top.every((t) => t.value === 0) ? (
+                    <div
+                      style={{
+                        fontSize: 10,
+                        color: "#222",
+                      }}
+                    >
+                      No focus logged in this window.
+                    </div>
+                  ) : (
+                    top.map((s) => (
+                      <div
+                        key={s.name}
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          padding: "4px 0",
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 6,
+                          }}
+                        >
+                          <span
+                            style={{
+                              width: 5,
+                              height: 5,
+                              borderRadius: "50%",
+                              background: s.color,
+                              flexShrink: 0,
+                              display: "inline-block",
+                            }}
+                          />
+                          <span
+                            style={{
+                              fontSize: 10,
+                              color: "#444",
+                              textTransform: "uppercase",
+                              letterSpacing: "0.05em",
+                            }}
+                          >
+                            {s.name}
+                          </span>
+                        </div>
+                        <span
+                          style={{
+                            fontFamily: "'JetBrains Mono', monospace",
+                            fontSize: 10,
+                            color: "#3a3a3a",
+                          }}
+                        >
+                          {Math.round(s.value)}m
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
       </div>
 
@@ -1052,6 +1366,7 @@ export default function PomodoroApp() {
   const ytVideoTitleRef = useRef(ytVideoTitle);
   const ytArtistRef = useRef(ytArtist);
   const isMusicPlayingRef = useRef(isMusicPlaying);
+  const [isClearingData, setIsClearingData] = useState(false);
 
   useEffect(() => {
     modeRef.current = mode;
@@ -1749,6 +2064,17 @@ export default function PomodoroApp() {
     setTimeLeft(settings[MODES[mode].key] * 60);
   };
 
+  const addFiveMinutes = () => {
+    setTimeLeft((t) => t + 5 * 60);
+  };
+
+  const skipBreak = () => {
+    if (mode === "work") return;
+    setIsRunning(false);
+    setTimeLeft(settings.workDuration * 60);
+    setMode("work");
+  };
+
   const toggleRunning = () => {
     const willRun = !isRunning;
     if (willRun) {
@@ -1846,6 +2172,106 @@ export default function PomodoroApp() {
     try {
       await window.storage.set("settings", JSON.stringify(newSettings));
     } catch {}
+  };
+
+  const applyPreset = (preset) => {
+    setSettingsInput((s) => ({
+      ...s,
+      workDuration: preset.workDuration,
+      shortBreak: preset.shortBreak,
+      longBreak: preset.longBreak,
+    }));
+  };
+
+  // ── Data management helpers (clear today / all) ────────────────────────────
+  const clearTodayData = async () => {
+    if (isClearingData) return;
+    const todayLabel = new Date().toLocaleDateString();
+    if (
+      !window.confirm(
+        `Clear all sessions logged for today (${todayLabel})? This cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    setIsClearingData(true);
+    try {
+      const todayIso = new Date().toISOString().slice(0, 10);
+      const r = await window.storage.list(`sessions:${todayIso}`);
+      const keys = (r && r.keys) || [];
+      if (typeof window.storage.remove === "function") {
+        await Promise.all(
+          keys.map((k) =>
+            window.storage.remove(k.replace("pomodoro_", "")),
+          ),
+        );
+      } else if (typeof localStorage !== "undefined") {
+        keys.forEach((k) => {
+          try {
+            localStorage.removeItem(k);
+          } catch {}
+        });
+      }
+      // Refresh in‑memory history and today count
+      setHistory((prev) =>
+        prev.filter(
+          (s) =>
+            !s.completedAt ||
+            !s.completedAt.startsWith(todayIso) ||
+            s.type !== "work",
+        ),
+      );
+      setSessionCount((c) => 0);
+    } catch {
+      // ignore and fall through
+    } finally {
+      setIsClearingData(false);
+    }
+  };
+
+  const clearAllData = async () => {
+    if (isClearingData) return;
+    if (
+      !window.confirm(
+        "Clear ALL saved sessions and settings on this device? This cannot be undone.",
+      )
+    ) {
+      return;
+    }
+    setIsClearingData(true);
+    try {
+      const r = await window.storage.list("sessions:");
+      const keys = (r && r.keys) || [];
+      if (typeof window.storage.remove === "function") {
+        await Promise.all(
+          keys.map((k) =>
+            window.storage.remove(k.replace("pomodoro_", "")),
+          ),
+        );
+        await window.storage.remove("settings");
+      } else if (typeof localStorage !== "undefined") {
+        keys.forEach((k) => {
+          try {
+            localStorage.removeItem(k);
+          } catch {}
+        });
+        try {
+          localStorage.removeItem("pomodoro_settings");
+        } catch {}
+      }
+      // Reset in‑memory state
+      setHistory([]);
+      setSessionCount(0);
+      setSettings(DEFAULT_SETTINGS);
+      setSettingsInput(DEFAULT_SETTINGS);
+      setTimeLeft(DEFAULT_SETTINGS.workDuration * 60);
+      setMode("work");
+      setSubject(DEFAULT_SUBJECTS[0]);
+    } catch {
+      // ignore and fall through
+    } finally {
+      setIsClearingData(false);
+    }
   };
 
   // ── Format time helper ─────────────────────────────────────────────────────
@@ -2708,6 +3134,30 @@ export default function PomodoroApp() {
                 </svg>
               </button>
 
+              {mode === "work" && (
+                <button
+                  className="btn-icon chrome"
+                  style={{ color: "#2e2e2e", opacity: chromeOp }}
+                  onClick={addFiveMinutes}
+                  aria-label="Add 5 minutes"
+                  title="Add 5 minutes"
+                >
+                  <svg
+                    width="15"
+                    height="15"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                  >
+                    <circle cx="12" cy="12" r="9" />
+                    <line x1="12" y1="8" x2="12" y2="16" />
+                    <line x1="8" y1="12" x2="16" y2="12" />
+                  </svg>
+                </button>
+              )}
+
               <button
                 className="btn-primary"
                 onClick={toggleRunning}
@@ -2729,6 +3179,7 @@ export default function PomodoroApp() {
                 style={{ color: "#2e2e2e", opacity: chromeOp }}
                 onClick={() => isRunning && handleSessionEnd(true)}
                 aria-label="Skip session"
+                title="Skip session (log partial focus)"
               >
                 <svg
                   width="15"
@@ -2744,6 +3195,31 @@ export default function PomodoroApp() {
                   <line x1="19" y1="5" x2="19" y2="19" />
                 </svg>
               </button>
+
+              {mode !== "work" && (
+                <button
+                  className="btn-icon chrome"
+                  style={{ color: "#2e2e2e", opacity: chromeOp }}
+                  onClick={skipBreak}
+                  aria-label="Skip break"
+                  title="Skip break and go back to focus"
+                >
+                  <svg
+                    width="15"
+                    height="15"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <polyline points="7 8 3 12 7 16" />
+                    <line x1="3" y1="12" x2="15" y2="12" />
+                    <polyline points="17 8 21 12 17 16" />
+                  </svg>
+                </button>
+              )}
             </div>
 
             {/* ── Music Player Card (shared UI for both local & YT) ── */}
@@ -3027,6 +3503,8 @@ export default function PomodoroApp() {
               history={history}
               allSubjects={allSubjects}
               subjectDot={subjectDot}
+              onClearAllData={isClearingData ? null : clearAllData}
+              onClearToday={isClearingData ? null : clearTodayData}
             />
             {/* Mini music player shown at bottom of Stats view when music is active */}
             {hasMusicActive && (
@@ -3075,6 +3553,47 @@ export default function PomodoroApp() {
 
         {/* Durations */}
         <span className="s-label">Durations</span>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <span className="s-hint">Quick presets</span>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            <button
+              className="s-add-btn"
+              onClick={() =>
+                applyPreset({
+                  workDuration: 25,
+                  shortBreak: 5,
+                  longBreak: 15,
+                })
+              }
+            >
+              25 / 5 / 15
+            </button>
+            <button
+              className="s-add-btn"
+              onClick={() =>
+                applyPreset({
+                  workDuration: 50,
+                  shortBreak: 10,
+                  longBreak: 20,
+                })
+              }
+            >
+              50 / 10 / 20
+            </button>
+            <button
+              className="s-add-btn"
+              onClick={() =>
+                applyPreset({
+                  workDuration: 15,
+                  shortBreak: 3,
+                  longBreak: 10,
+                })
+              }
+            >
+              15 / 3 / 10
+            </button>
+          </div>
+        </div>
         {[
           { label: "Focus", key: "workDuration" },
           { label: "Short Break", key: "shortBreak" },

@@ -34,6 +34,10 @@
             list: async (prefix) => {
                 const keys = Object.keys(localStorage).filter(k => k.startsWith('pomodoro_' + prefix));
                 return { keys };
+            },
+            // Optional remove helper so the app can clear data cleanly
+            remove: async (key) => {
+                localStorage.removeItem('pomodoro_' + key);
             }
         };
 
