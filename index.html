@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pomodoro Focus App - Preview</title>
+    <!-- Load React, Babel, and Recharts for local artifact preview -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/howler/2.2.4/howler.min.js"></script>
+    <style>
+        body { margin: 0; padding: 0; background: #080808; }
+        #root { width: 100%; min-height: 100vh; }
+    </style>
+</head>
+<body>
+    <div id="root">
+        <div style="color: #333; font-family: sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh;">
+            Loading Pomodoro Artifact...
+        </div>
+    </div>
+    <script>
+        // Mock window.storage for local preview
+        window.storage = {
+            get: async (key) => {
+                const val = localStorage.getItem('pomodoro_' + key);
+                return val ? { value: val } : null;
+            },
+            set: async (key, val) => {
+                localStorage.setItem('pomodoro_' + key, val);
+            },
+            list: async (prefix) => {
+                const keys = Object.keys(localStorage).filter(k => k.startsWith('pomodoro_' + prefix));
+                return { keys };
+            }
+        };
+
+        // Fetch and inject the JSX content
+        fetch('./pomodoro.jsx?t=' + Date.now())
+            .then(res => {
+                if (!res.ok) throw new Error(`HTTP error! status: ${res.status} (File not found?)`);
+                return res.text();
+            })
+            .then(code => {
+                // Remove all variations of import statements:
+                // 1. import { ... } from "..."
+                // 2. import name from "..."
+                // 3. import "..."
+                let componentCode = code
+                    .replace(/^import\s+[\s\S]*?from\s+["'].*?["'];?\s*$/gm, '')
+                    .replace(/^import\s+["'].*?["'];?\s*$/gm, '')
+                    // Replace export default with a regular function declaration
+                    .replace(/export\s+default\s+function\s+PomodoroApp/, 'function PomodoroApp');
+                
+                // Add the render call and common hooks to the global scope
+                const finalCode = `
+                    const { useState, useEffect, useRef, useCallback, useMemo } = React;
+                    const { 
+                      ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, 
+                      PieChart, Pie, Cell, LineChart, Line, AreaChart, Area 
+                    } = window.Recharts || {};
+                    
+                    // Define Recharts components globally for pomodoro.jsx to use
+                    window.ResponsiveContainer = ResponsiveContainer;
+                    window.BarChart = BarChart;
+                    window.Bar = Bar;
+                    window.XAxis = XAxis;
+                    window.YAxis = YAxis;
+                    window.Tooltip = Tooltip;
+                    window.Cell = Cell;
+
+                    ${componentCode}
+                    const root = ReactDOM.createRoot(document.getElementById("root"));
+                    root.render(<PomodoroApp />);
+                `;
+                
+                // Evaluate the component using Babel
+                try {
+                    const transpiled = Babel.transform(finalCode, { 
+                        presets: ['react'],
+                        filename: 'pomodoro.jsx' 
+                    }).code;
+                    const script = document.createElement('script');
+                    script.text = transpiled;
+                    document.body.appendChild(script);
+                } catch (e) {
+                    console.error("Babel transformation error:", e);
+                    document.getElementById('root').innerHTML = `<div style="color: #ff5555; background: #0c0c0c; padding: 40px; font-family: 'JetBrains Mono', monospace; line-height: 1.5; border: 1px solid #222; margin: 20px; border-radius: 8px;">
+                        <h2 style="margin-top: 0; font-size: 18px; border-bottom: 1px solid #222; padding-bottom: 10px; color: #ff8888;">Babel Transformation Error</h2>
+                        <pre style="white-space: pre-wrap; font-size: 13px; color: #d8d8d8; margin-top: 20px;">${e.message}</pre>
+                        <div style="margin-top: 20px; font-size: 11px; color: #555;">Check the browser console for details.</div>
+                    </div>`;
+                }
+            })
+            .catch(e => {
+                console.error("Fetch error:", e);
+                document.getElementById('root').innerHTML = `<div style="color: #ff5555; background: #0c0c0c; padding: 40px; font-family: 'JetBrains Mono', monospace; line-height: 1.5; border: 1px solid #222; margin: 20px; border-radius: 8px;">
+                    <h2 style="margin-top: 0; font-size: 18px; border-bottom: 1px solid #222; padding-bottom: 10px; color: #ff8888;">Fetch Error</h2>
+                    <pre style="white-space: pre-wrap; font-size: 13px; color: #d8d8d8; margin-top: 20px;">${e.message}</pre>
+                    <div style="margin-top: 20px; font-size: 11px; color: #555;">Ensure the local server is running and pomodoro.jsx is in the same folder.</div>
+                </div>`;
+            });
+    </script>
+</body>
+</html>
