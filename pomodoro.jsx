@@ -1506,9 +1506,9 @@ export default function PomodoroApp() {
   useEffect(() => {
     (async () => {
       // Pick a random quote from API with fallback - NON-BLOCKING
-      fetch("https://api.quotable.io/random")
+      fetch("https://dummyjson.com/quotes/random")
         .then(res => res.ok ? res.json() : Promise.reject())
-        .then(data => setCurrentQuote({ text: data.content, author: data.author }))
+        .then(data => setCurrentQuote({ text: data.quote, author: data.author }))
         .catch(() => {
           const randomQuote = QUOTES[Math.floor(Math.random() * QUOTES.length)];
           setCurrentQuote(randomQuote);
@@ -2672,18 +2672,37 @@ export default function PomodoroApp() {
 
         @media (max-width: 800px) {
           .focus-grid {
-            grid-template-columns: 1fr;
+            display: flex;
+            flex-direction: column;
             height: auto;
-            gap: 24px;
-            padding: 20px;
+            gap: 20px;
+            padding: 20px 15px;
+            overflow-y: visible;
+            align-items: center;
+          }
+          .focus-side-panel { 
+            display: flex; 
+            width: 100%; 
+            height: auto;
+            justify-content: flex-start;
+          }
+          /* Re-order: Timer first, then Stats, then Tasks */
+          .focus-grid > div:nth-child(1) { order: 2; } /* Left panel (Stats) */
+          .focus-grid > div:nth-child(2) { order: 1; width: 100%; } /* Middle (Timer) */
+          .focus-grid > div:nth-child(3) { order: 3; } /* Right panel (Tasks) */
+          
+          .view-transition { 
+            padding: 70px 10px 40px !important; 
+            height: auto;
+            min-height: 100vh;
             overflow-y: auto;
           }
-          .focus-side-panel { display: flex; order: 2; width: 100%; }
-          .focus-grid > div:nth-child(2) { order: 1; } /* Timer in middle */
-          .focus-grid > div:nth-child(3) { order: 3; } /* Tasks at bottom */
-          .view-transition { padding: 60px 15px 20px !important; }
           .stats-card { grid-template-columns: 1fr !important; }
           .heatmap-cell { min-width: 10px; }
+          
+          /* Scale down timer ring slightly for small phones */
+          svg { transform: scale(0.9) rotate(-90deg); }
+          .subj-scroll-container { max-width: 100%; padding: 10px 40px; }
         }
 
         .btn-mode {
