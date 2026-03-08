@@ -7,6 +7,7 @@
     <!-- Load React, Babel, and Recharts for local artifact preview -->
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/prop-types@15.8.1/prop-types.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/howler/2.2.4/howler.min.js"></script>
@@ -17,8 +18,8 @@
 </head>
 <body>
     <div id="root">
-        <div style="color: #333; font-family: sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh;">
-            Loading Pomodoro Artifact...
+        <div style="background: #080808; display: flex; align-items: center; justify-content: center; height: 100vh;">
+            <div style="font-family: sans-serif; font-size: 10px; color: #1a1a1a; letter-spacing: 0.3em; text-transform: uppercase;">Initializing...</div>
         </div>
     </div>
     <script>
@@ -56,11 +57,14 @@
                     .replace(/^import\s+[\s\S]*?from\s+["'].*?["'];?\s*$/gm, '')
                     .replace(/^import\s+["'].*?["'];?\s*$/gm, '')
                     // Replace export default with a regular function declaration
-                    .replace(/export\s+default\s+function\s+PomodoroApp/, 'function PomodoroApp');
+                    .replace(/export\s+default\s+function\s+PomodoroApp/, 'function PomodoroApp')
+                    // Fix possible duplicate definitions if any
+                    .replace(/const\s+\{\s*useState,\s*useEffect,\s*useRef,\s*useCallback,\s*useMemo\s*\}\s*=\s*React;/g, '');
                 
                 // Add the render call and common hooks to the global scope
                 const finalCode = `
                     const { useState, useEffect, useRef, useCallback, useMemo } = React;
+                    const PropTypes = window.PropTypes;
                     const { 
                       ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, 
                       PieChart, Pie, Cell, LineChart, Line, AreaChart, Area 
@@ -74,6 +78,11 @@
                     window.YAxis = YAxis;
                     window.Tooltip = Tooltip;
                     window.Cell = Cell;
+                    
+                    // Add YT Mock if not loaded
+                    if (!window.YT) {
+                        window.YT = { PlayerState: { PLAYING: 1, PAUSED: 2, ENDED: 0, BUFFERING: 3, CUED: 5 } };
+                    }
 
                     ${componentCode}
                     const root = ReactDOM.createRoot(document.getElementById("root"));

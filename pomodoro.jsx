@@ -45,17 +45,6 @@ function playTick() {
   } catch {}
 }
 
-// ── Sanitization Helpers ─────────────────────────────────────────────────────
-function sanitizeText(str) {
-  if (typeof str !== "string") return "";
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
-
 function sanitizeCSVField(field) {
   if (typeof field !== "string") return String(field || "");
   // Prevent CSV injection: strip leading =, +, -, @, tab, carriage return
@@ -98,6 +87,9 @@ const DEFAULT_SETTINGS = {
   youtubeUrl: "https://www.youtube.com/watch?v=jfKfPfyJRdk", // Default Lofi Girl
   musicVolume: 0.5,
   lastTrackId: "none",
+  focusTasks: [
+    { id: 1, text: "", completed: false },
+  ],
 };
 
 const MODES = {
@@ -161,6 +153,19 @@ const AMBIANCE_TRACKS = [
     artist: "Mixkit Tones",
     url: "https://assets.mixkit.co/active_storage/sfx/2571/2571-preview.mp3",
   },
+];
+
+const QUOTES = [
+  { text: "The only way to do great work is to love what you do.", author: "Steve Jobs" },
+  { text: "Your time is limited, so don't waste it living someone else's life.", author: "Steve Jobs" },
+  { text: "It does not matter how slowly you go as long as you do not stop.", author: "Confucius" },
+  { text: "Focus on being productive instead of busy.", author: "Tim Ferriss" },
+  { text: "Efficiency is doing things right; effectiveness is doing the right things.", author: "Peter Drucker" },
+  { text: "Don't count the days, make the days count.", author: "Muhammad Ali" },
+  { text: "The future depends on what you do today.", author: "Mahatma Gandhi" },
+  { text: "Action is the foundational key to all success.", author: "Pablo Picasso" },
+  { text: "Deep work is the ability to focus without distraction.", author: "Cal Newport" },
+  { text: "The secret of getting ahead is getting started.", author: "Mark Twain" },
 ];
 
 // ── Mini Music Player (used in Stats tab) ────────────────────────────────────
@@ -393,6 +398,7 @@ function StatsDashboard({
     const safeHistory = (history || []).filter((s) => {
       if (!s) return false;
       if (!s.completedAt || typeof s.completedAt !== "string") return false;
+      if (!s.subject) return false; // Ensure subject exists
       return true;
     });
 
@@ -421,13 +427,17 @@ function StatsDashboard({
         ? breakdownAll.filter((s) => s.value > 0)
         : breakdownAll;
 
-    const days = range === "week" ? 7 : range === "month" ? 30 : 365;
+    const days = range === "week" ? 7 : range === "month" ? 31 : 365;
     const activity = [];
     const now = new Date();
+    // Use local time for generating activity dates to match session logging
     for (let i = 0; i < days; i++) {
       const d = new Date(now);
       d.setDate(d.getDate() - (days - 1 - i));
-      const ds = d.toISOString().slice(0, 10);
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      const ds = `${year}-${month}-${day}`;
       const count = safeHistory.filter(
         (s) => s.completedAt.startsWith(ds) && s.type === "work",
       ).length;
@@ -1044,18 +1054,19 @@ function StatsDashboard({
         </div>
       </div>
 
-      {/* Activity Heatmap */}
-      <div className="stats-card" style={{ position: "relative" }}>
+      <div className="stats-card">
         <div
           style={{
             display: "flex",
             justifyContent: "space-between",
             alignItems: "center",
             marginBottom: 12,
+            gap: 12,
+            flexWrap: "wrap"
           }}
         >
           <div style={{ display: "flex", flexDirection: "column" }}>
-            <span className="stats-title">Activity</span>
+            <span className="stats-title">Activity Timeline</span>
             <span
               style={{
                 fontSize: 9,
@@ -1064,7 +1075,11 @@ function StatsDashboard({
                 fontWeight: 500,
               }}
             >
-              {new Date().getFullYear()} Timeline
+              {range === "year" 
+                ? `${new Date().getFullYear()} Timeline` 
+                : range === "month" 
+                  ? `${new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" })} View`
+                  : `Last 7 Days Activity`}
             </span>
           </div>
           <div style={{ display: "flex", gap: 4 }}>
@@ -1086,7 +1101,7 @@ function StatsDashboard({
               range === "week"
                 ? "repeat(7, 1fr)"
                 : range === "month"
-                  ? "repeat(30, 1fr)"
+                  ? "repeat(31, 1fr)"
                   : "repeat(53, 1fr)",
             marginTop: 10,
           }}
@@ -1125,12 +1140,14 @@ function StatsDashboard({
                   inset: 0,
                   background: "#0d0d0d",
                   borderRadius: 8,
-                  padding: 20,
+                  padding: "32px 40px",
                   zIndex: 5,
                   display: "flex",
                   flexDirection: "column",
-                  gap: 14,
+                  gap: 24,
                   animation: "fadeUp 0.3s ease",
+                  border: "1px solid #1a1a1a",
+                  overflow: "hidden",
                 }}
               >
                 <div
@@ -1140,17 +1157,22 @@ function StatsDashboard({
                     alignItems: "center",
                   }}
                 >
-                  <span className="stats-title" style={{ color: "#555" }}>
-                    Details — {selectedDay}
-                  </span>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    <span className="stats-title" style={{ color: "#444", fontSize: 12, letterSpacing: "0.2em" }}>
+                      DAY DETAILS
+                    </span>
+                    <span style={{ fontSize: 24, fontWeight: 800, color: "#d8d8d8", fontFamily: "Syne" }}>
+                      {new Date(selectedDay).toLocaleDateString("en-US", { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
+                    </span>
+                  </div>
                   <button
                     className="btn-icon"
                     onClick={() => setSelectedDay(null)}
-                    style={{ color: "#333" }}
+                    style={{ color: "#333", background: "#161616", padding: 10, borderRadius: "50%" }}
                   >
                     <svg
-                      width="14"
-                      height="14"
+                      width="18"
+                      height="18"
                       viewBox="0 0 24 24"
                       fill="none"
                       stroke="currentColor"
@@ -1161,48 +1183,39 @@ function StatsDashboard({
                     </svg>
                   </button>
                 </div>
+
                 <div
-                  style={{ display: "flex", gap: 24, alignItems: "baseline" }}
+                  style={{ display: "flex", gap: 48, padding: "20px 0", borderBottom: "1px solid #141414" }}
                 >
-                  <div>
-                    <span
-                      style={{
-                        fontFamily: "'JetBrains Mono', monospace",
-                        fontSize: 22,
-                        fontWeight: 300,
-                        color: "#d8d8d8",
-                      }}
-                    >
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    <span style={{ fontSize: 32, fontWeight: 300, color: "#d8d8d8", fontFamily: "JetBrains Mono" }}>
                       {daySessions.length}
                     </span>
-                    <span className="stats-label" style={{ marginLeft: 6 }}>
-                      sessions
-                    </span>
+                    <span className="stats-label" style={{ color: "#2a2a2a", fontSize: 10 }}>SESSIONS COMPLETED</span>
                   </div>
-                  <div>
-                    <span
-                      style={{
-                        fontFamily: "'JetBrains Mono', monospace",
-                        fontSize: 22,
-                        fontWeight: 300,
-                        color: "#d8d8d8",
-                      }}
-                    >
-                      {Math.floor(dayMins / 60)}h {Math.round(dayMins % 60)}m
-                    </span>
-                    <span className="stats-label" style={{ marginLeft: 6 }}>
-                      focused
-                    </span>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                      <span style={{ fontSize: 32, fontWeight: 300, color: "#d8d8d8", fontFamily: "JetBrains Mono" }}>
+                        {Math.floor(dayMins / 60)}<span style={{ fontSize: 16, color: "#333", marginLeft: 2 }}>h</span>
+                      </span>
+                      <span style={{ fontSize: 32, fontWeight: 300, color: "#d8d8d8", fontFamily: "JetBrains Mono" }}>
+                        {Math.round(dayMins % 60)}<span style={{ fontSize: 16, color: "#333", marginLeft: 2 }}>m</span>
+                      </span>
+                    </div>
+                    <span className="stats-label" style={{ color: "#2a2a2a", fontSize: 10 }}>TOTAL FOCUS TIME</span>
                   </div>
                 </div>
+
                 <div
                   style={{
                     display: "flex",
                     flexDirection: "column",
-                    gap: 4,
+                    gap: 12,
                     overflowY: "auto",
                     flex: 1,
+                    paddingRight: 10,
                   }}
+                  className="settings-drawer" // Reuse scrollbar styles
                 >
                   {daySessions.length > 0 ? (
                     daySessions.map((s, i) => (
@@ -1210,100 +1223,74 @@ function StatsDashboard({
                         key={i}
                         style={{
                           display: "flex",
-                          justifyContent: "space-between",
-                          alignItems: "center",
-                          padding: "7px 10px",
-                          background: "#111",
-                          borderRadius: 4,
-                          border: "1px solid #191919",
+                          flexDirection: "column",
+                          gap: 12,
+                          padding: 20,
+                          background: "#0f0f0f",
+                          borderRadius: 12,
+                          border: "1px solid #181818",
                         }}
                       >
-                        <div
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 8,
-                          }}
-                        >
-                          <span
-                            style={{
-                              width: 5,
-                              height: 5,
-                              borderRadius: "50%",
-                              background: subjectDot(s.subject),
-                              flexShrink: 0,
-                              display: "inline-block",
-                            }}
-                          />
-                          <span
-                            style={{
-                              fontSize: 11,
-                              color: "#555",
-                              fontFamily: "'Syne', sans-serif",
-                              letterSpacing: "0.05em",
-                            }}
-                          >
-                            {s.subject}
-                          </span>
-                        </div>
-                        <div
-                          style={{
-                            display: "flex",
-                            gap: 14,
-                            alignItems: "center",
-                          }}
-                        >
-                          {s.musicTitle && (
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                             <span
                               style={{
-                                fontFamily: "'JetBrains Mono', monospace",
-                                fontSize: 8,
-                                color: "#1e1e1e",
-                                maxWidth: 80,
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                whiteSpace: "nowrap",
+                                width: 8,
+                                height: 8,
+                                borderRadius: "50%",
+                                background: subjectDot(s.subject),
                               }}
-                              title={`${s.musicSource}: ${s.musicTitle}`}
-                            >
-                              ♪ {s.musicTitle}
+                            />
+                            <span style={{ fontSize: 14, fontWeight: 600, color: "#888", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                              {s.subject}
                             </span>
-                          )}
-                          <span
-                            style={{
-                              fontFamily: "'JetBrains Mono', monospace",
-                              fontSize: 11,
-                              color: "#3a3a3a",
-                            }}
-                          >
-                            {Math.round(parseFloat(s.duration) || 0)}m
-                          </span>
-                          <span
-                            style={{
-                              fontFamily: "'JetBrains Mono', monospace",
-                              fontSize: 9,
-                              color: "#252525",
-                            }}
-                          >
-                            {new Date(s.completedAt).toLocaleTimeString(
-                              "en-US",
-                              { hour: "2-digit", minute: "2-digit" },
-                            )}
-                          </span>
+                          </div>
+                          <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                            <span style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: "#444" }}>
+                              {Math.round(parseFloat(s.duration) || 0)} min
+                            </span>
+                            <span style={{ fontFamily: "JetBrains Mono", fontSize: 10, color: "#222" }}>
+                              {new Date(s.completedAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}
+                            </span>
+                          </div>
                         </div>
+
+                        {s.tasks && s.tasks.filter(t => t.text.trim()).length > 0 && (
+                          <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "12px 16px", background: "#080808", borderRadius: 8, border: "1px solid #141414" }}>
+                            <span style={{ fontSize: 9, color: "#222", fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase" }}>Tasks Logged</span>
+                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                              {/* Completed Tasks */}
+                              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                                <span style={{ fontSize: 8, color: "#39d35344", fontWeight: 600 }}>COMPLETED</span>
+                                {s.tasks.filter(t => t.completed && t.text.trim()).length > 0 ? (
+                                  s.tasks.filter(t => t.completed && t.text.trim()).map((t, ti) => (
+                                    <div key={ti} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                      <div style={{ width: 4, height: 4, borderRadius: "50%", background: "#39d353" }} />
+                                      <span style={{ fontSize: 11, color: "#39d353aa", textDecoration: "line-through" }}>{t.text}</span>
+                                    </div>
+                                  ))
+                                ) : <span style={{ fontSize: 10, color: "#1a1a1a" }}>None</span>}
+                              </div>
+                              {/* Left Tasks */}
+                              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                                <span style={{ fontSize: 8, color: "#444", fontWeight: 600 }}>PENDING</span>
+                                {s.tasks.filter(t => !t.completed && t.text.trim()).length > 0 ? (
+                                  s.tasks.filter(t => !t.completed && t.text.trim()).map((t, ti) => (
+                                    <div key={ti} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                      <div style={{ width: 4, height: 4, borderRadius: "50%", background: "#222" }} />
+                                      <span style={{ fontSize: 11, color: "#555" }}>{t.text}</span>
+                                    </div>
+                                  ))
+                                ) : <span style={{ fontSize: 10, color: "#1a1a1a" }}>None</span>}
+                              </div>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     ))
                   ) : (
-                    <div
-                      style={{
-                        fontSize: 10,
-                        color: "#2a2a2a",
-                        textAlign: "center",
-                        padding: 24,
-                        letterSpacing: "0.08em",
-                      }}
-                    >
-                      No focus sessions on this day
+                    <div style={{ fontSize: 12, color: "#222", textAlign: "center", padding: 60 }}>
+                      No focus sessions recorded for this day.
                     </div>
                   )}
                 </div>
@@ -1323,9 +1310,86 @@ export default function PomodoroApp() {
   const [isRunning, setIsRunning] = useState(false);
   const [sessionCount, setSessionCount] = useState(0);
   const [pomodoroCount, setPomodoroCount] = useState(0);
+  const [howlerAvailable, setHowlerAvailable] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsInput, setSettingsInput] = useState(DEFAULT_SETTINGS);
   const [loaded, setLoaded] = useState(false);
+  const [isSplashActive, setIsSplashActive] = useState(true);
+  const [focusTasks, setFocusTasks] = useState(DEFAULT_SETTINGS.focusTasks);
+  const [currentQuote, setCurrentQuote] = useState(QUOTES[0]);
+
+  const handleToggleTask = (id) => {
+    setFocusTasks(prev => {
+      const next = prev.map(t => t.id === id ? { ...t, completed: !t.completed } : t);
+      // Persist
+      const current = settingsRef.current;
+      const updatedSettings = { ...current, focusTasks: next };
+      settingsRef.current = updatedSettings;
+      window.storage.set("settings", JSON.stringify(updatedSettings));
+      return next;
+    });
+  };
+
+  const handleTaskChange = (id, text) => {
+    setFocusTasks(prev => {
+      const next = prev.map(t => t.id === id ? { ...t, text } : t);
+      // Persist
+      const current = settingsRef.current;
+      const updatedSettings = { ...current, focusTasks: next };
+      settingsRef.current = updatedSettings;
+      window.storage.set("settings", JSON.stringify(updatedSettings));
+      return next;
+    });
+  };
+
+  const handleAddTask = () => {
+    if (focusTasks.length >= 5) return;
+    setFocusTasks(prev => {
+      const next = [...prev, { id: Date.now(), text: "", completed: false }];
+      // Persist
+      const current = settingsRef.current;
+      const updatedSettings = { ...current, focusTasks: next };
+      settingsRef.current = updatedSettings;
+      window.storage.set("settings", JSON.stringify(updatedSettings));
+      return next;
+    });
+  };
+
+  const handleRemoveTask = (id) => {
+    setFocusTasks(prev => {
+      let next = prev.filter(t => t.id !== id);
+      if (next.length === 0) next = [{ id: Date.now(), text: "", completed: false }];
+      // Persist
+      const current = settingsRef.current;
+      const updatedSettings = { ...current, focusTasks: next };
+      settingsRef.current = updatedSettings;
+      window.storage.set("settings", JSON.stringify(updatedSettings));
+      return next;
+    });
+  };
+
+  const handleTaskKeyDown = (e, id, index) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const task = focusTasks.find(t => t.id === id);
+      if (task && task.text.trim()) {
+        if (index === focusTasks.length - 1 && focusTasks.length < 5) {
+          handleAddTask();
+        } else if (index < focusTasks.length - 1) {
+          // Focus next input if it exists
+          const inputs = document.querySelectorAll('.task-input');
+          if (inputs[index + 1]) inputs[index + 1].focus();
+        }
+      }
+    } else if (e.key === "Escape") {
+      const task = focusTasks.find(t => t.id === id);
+      if (!task.text.trim() && focusTasks.length > 1) {
+        handleRemoveTask(id);
+      } else {
+        e.target.blur();
+      }
+    }
+  };
   const [lockedNotice, setLockedNotice] = useState(false);
   // Phase 2
   const [subject, setSubject] = useState("Physics");
@@ -1354,25 +1418,42 @@ export default function PomodoroApp() {
   const ytPlayerRef = useRef(null);
   const lockedTimerRef = useRef(null);
   const autoStartRef = useRef(null);
+  const startTimestampRef = useRef(null);
+  const initialTimeLeftRef = useRef(0);
   const ytProgressRef = useRef(null); // interval for yt progress polling
   const timeLeftRef = useRef(timeLeft); // ref for actual time left (for skip duration calc)
 
   const modeRef = useRef(mode);
   const settingsRef = useRef(settings);
   const subjectRef = useRef(subject);
+  const focusTasksRef = useRef(focusTasks);
 
   // Music refs for use in handleSessionEnd (avoids stale closures)
   const currentTrackRef = useRef(currentTrack);
   const ytVideoTitleRef = useRef(ytVideoTitle);
   const ytArtistRef = useRef(ytArtist);
   const isMusicPlayingRef = useRef(isMusicPlaying);
+  const toggleMusicRef = useRef(null);
+  const isClearingRef = useRef(false);
   const [isClearingData, setIsClearingData] = useState(false);
+  const [isChangingView, setIsChangingView] = useState(false);
+  const [confirmConfig, setConfirmConfig] = useState(null); // { message, onConfirm }
+
+  const handleViewChange = (newView) => {
+    if (view === newView) return;
+    setIsChangingView(true);
+    setTimeout(() => {
+      setView(newView);
+      setIsChangingView(false);
+    }, 300);
+  };
 
   useEffect(() => {
     modeRef.current = mode;
     settingsRef.current = settings;
     subjectRef.current = subject;
-  }, [mode, settings, subject]);
+    focusTasksRef.current = focusTasks;
+  }, [mode, settings, subject, focusTasks]);
 
   useEffect(() => {
     timeLeftRef.current = timeLeft;
@@ -1400,7 +1481,11 @@ export default function PomodoroApp() {
     [settings.customSubjects],
   );
   const subjectDot = useCallback(
-    (s) => SUBJECT_DOTS[allSubjects.indexOf(s) % SUBJECT_DOTS.length],
+    (s) => {
+      const idx = allSubjects.indexOf(s);
+      if (idx === -1) return "#333";
+      return SUBJECT_DOTS[idx % SUBJECT_DOTS.length];
+    },
     [allSubjects],
   );
 
@@ -1414,19 +1499,51 @@ export default function PomodoroApp() {
   const mins = String(Math.floor(timeLeft / 60)).padStart(2, "0");
   const secs = String(timeLeft % 60).padStart(2, "0");
   const pipsFilled = pomodoroCount % 4;
-  const chromeOp = isRunning ? 0.07 : 1;
+  const chromeOp = isRunning ? 0.2 : 1;
   const subjectOp = isRunning ? 0.35 : 1;
 
   // ── Load settings ──────────────────────────────────────────────────────────
   useEffect(() => {
     (async () => {
+      // Pick a random quote from API with fallback - NON-BLOCKING
+      fetch("https://api.quotable.io/random")
+        .then(res => res.ok ? res.json() : Promise.reject())
+        .then(data => setCurrentQuote({ text: data.content, author: data.author }))
+        .catch(() => {
+          const randomQuote = QUOTES[Math.floor(Math.random() * QUOTES.length)];
+          setCurrentQuote(randomQuote);
+        });
+
+      // Detect Howler availability
+      const isHowlerMissing = typeof window.Howl === "undefined";
+      if (isHowlerMissing) {
+        setHowlerAvailable(false);
+      }
+
       try {
         const r = await window.storage.get("settings");
         if (r) {
           const s = { ...DEFAULT_SETTINGS, ...JSON.parse(r.value) };
+
+          // If Howler is missing, auto-switch to youtube
+          if (isHowlerMissing && s.musicSource === "local") {
+            s.musicSource = "youtube";
+          }
+
           setSettings(s);
           setSettingsInput(s);
           setTimeLeft(s.workDuration * 60);
+
+          // Restore persisted pomodoro count
+          if (typeof s.pomodoroCount === "number") {
+            setPomodoroCount(s.pomodoroCount % 4);
+          }
+
+          // Restore focus tasks
+          if (s.focusTasks) {
+            setFocusTasks(s.focusTasks);
+          }
+
           // Restore persisted music volume and track
           if (typeof s.musicVolume === "number") {
             setMusicVolume(s.musicVolume);
@@ -1436,33 +1553,43 @@ export default function PomodoroApp() {
             if (found) setCurrentTrack(found);
           }
         } else {
+          // If Howler is missing, default to youtube
+          if (isHowlerMissing) {
+            const s = { ...DEFAULT_SETTINGS, musicSource: "youtube" };
+            setSettings(s);
+            setSettingsInput(s);
+          }
           setTimeLeft(25 * 60);
         }
       } catch {
         setTimeLeft(25 * 60);
       }
       setLoaded(true);
+      // Fade out splash after a small delay
+      setTimeout(() => setIsSplashActive(false), 1200);
     })();
   }, []);
 
   // ── Load today's session count ─────────────────────────────────────────────
-  useEffect(() => {
-    (async () => {
-      try {
-        const today = new Date().toISOString().slice(0, 10);
-        const r = await window.storage.list(`sessions:${today}`);
-        if (r?.keys) {
-          const data = await Promise.all(
-            r.keys.map(async (k) => {
-              const val = await window.storage.get(k.replace("pomodoro_", ""));
-              return val ? JSON.parse(val.value) : null;
-            }),
-          );
-          setSessionCount(data.filter((s) => s?.type === "work").length);
-        }
-      } catch {}
-    })();
+  const loadTodaySessionCount = useCallback(async () => {
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      const r = await window.storage.list(`sessions:${today}`);
+      if (r?.keys) {
+        const data = await Promise.all(
+          r.keys.map(async (k) => {
+            const val = await window.storage.get(k.replace("pomodoro_", ""));
+            return val ? JSON.parse(val.value) : null;
+          }),
+        );
+        setSessionCount(data.filter((s) => s?.type === "work").length);
+      }
+    } catch {}
   }, []);
+
+  useEffect(() => {
+    loadTodaySessionCount();
+  }, [loadTodaySessionCount]);
 
   // ── Load session history ──────────────────────────────────────────────────
   const loadHistory = useCallback(async () => {
@@ -1491,35 +1618,27 @@ export default function PomodoroApp() {
     musicVolumeRef.current = musicVolume;
   }, [musicVolume]);
 
-  // ── Persist music volume ──────────────────────────────────────────────────
+  // ── Persist music volume and track selection ──────────────────────────────
   useEffect(() => {
-    const debounce = setTimeout(() => {
+    const t = setTimeout(async () => {
       try {
         const current = settingsRef.current;
-        if (current.musicVolume !== musicVolume) {
-          const updated = { ...current, musicVolume };
+        if (
+          current.musicVolume !== musicVolume ||
+          current.lastTrackId !== currentTrack.id
+        ) {
+          const updated = {
+            ...current,
+            musicVolume,
+            lastTrackId: currentTrack.id,
+          };
           settingsRef.current = updated;
-          window.storage.set("settings", JSON.stringify(updated));
+          await window.storage.set("settings", JSON.stringify(updated));
         }
       } catch {}
     }, 500);
-    return () => clearTimeout(debounce);
-  }, [musicVolume]);
-
-  // ── Persist last track selection ──────────────────────────────────────────
-  useEffect(() => {
-    const debounce = setTimeout(() => {
-      try {
-        const current = settingsRef.current;
-        if (current.lastTrackId !== currentTrack.id) {
-          const updated = { ...current, lastTrackId: currentTrack.id };
-          settingsRef.current = updated;
-          window.storage.set("settings", JSON.stringify(updated));
-        }
-      } catch {}
-    }, 300);
-    return () => clearTimeout(debounce);
-  }, [currentTrack.id]);
+    return () => clearTimeout(t);
+  }, [musicVolume, currentTrack.id]);
 
   // ── Stop all local Howls ───────────────────────────────────────────────────
   const stopAllHowls = useCallback(() => {
@@ -1781,6 +1900,7 @@ export default function PomodoroApp() {
   useEffect(() => {
     return () => {
       if (localProgressRef.current) clearInterval(localProgressRef.current);
+      if (autoStartRef.current) clearTimeout(autoStartRef.current);
       Object.values(howlsRef.current).forEach((h) => {
         try {
           h.unload();
@@ -1800,16 +1920,25 @@ export default function PomodoroApp() {
       return;
     }
     // Local
-    if (currentTrack.id === "none") return;
-    let howl = howlsRef.current[currentTrack.id];
+    let track = currentTrack;
+    if (track.id === "none") {
+      // Pick first real track if none is selected
+      track = AMBIANCE_TRACKS[1];
+      setCurrentTrack(track);
+    }
+    if (!howlerAvailable) return;
+    let howl = howlsRef.current[track.id];
     if (!howl) {
       howl = new window.Howl({
-        src: [currentTrack.url],
+        src: [track.url],
         html5: true,
         loop: true,
         volume: musicVolumeRef.current,
+        onload: () => {
+          setLocalDuration(howl.duration());
+        },
       });
-      howlsRef.current[currentTrack.id] = howl;
+      howlsRef.current[track.id] = howl;
     }
     if (isMusicPlaying) {
       howl.pause();
@@ -1819,6 +1948,10 @@ export default function PomodoroApp() {
       setIsMusicPlaying(true);
     }
   }, [settings.musicSource, currentTrack, isMusicPlaying]);
+
+  useEffect(() => {
+    toggleMusicRef.current = toggleMusic;
+  }, [toggleMusic]);
 
   const ytNextTrack = useCallback(() => {
     try {
@@ -1852,7 +1985,7 @@ export default function PomodoroApp() {
 
   const switchTrack = useCallback(
     (track) => {
-      if (settings.musicSource === "youtube") return;
+      if (settings.musicSource === "youtube" || !howlerAvailable) return;
       // Stop & unload previous
       if (howlsRef.current[currentTrack.id]) {
         try {
@@ -1922,6 +2055,7 @@ export default function PomodoroApp() {
         const ct = currentTrackRef.current;
         const ytTitle = ytVideoTitleRef.current;
         const ytArt = ytArtistRef.current;
+        const currentTasks = focusTasksRef.current;
         const musicMeta =
           s.musicSource === "youtube"
             ? {
@@ -1944,15 +2078,22 @@ export default function PomodoroApp() {
               duration: durationToSave,
               completedAt: now.toISOString(),
               type: "work",
+              tasks: currentTasks.map(t => ({ text: t.text, completed: t.completed })),
               ...musicMeta,
             }),
           );
         } catch {}
-        setSessionCount((c) => c + 1);
+        loadTodaySessionCount();
       }
       setPomodoroCount((p) => {
-        const next = p + 1;
-        if (next % 4 === 0) {
+        const next = (p + 1) % 4;
+        // Persist pomodoroCount
+        const currentSettings = settingsRef.current;
+        const updatedSettings = { ...currentSettings, pomodoroCount: next };
+        settingsRef.current = updatedSettings;
+        window.storage.set("settings", JSON.stringify(updatedSettings));
+
+        if (next === 0) {
           setMode("long");
           setTimeLeft(s.longBreak * 60);
         } else {
@@ -1977,17 +2118,27 @@ export default function PomodoroApp() {
 
   // ── Timer tick ─────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!isRunning) return;
+    if (!isRunning) {
+      startTimestampRef.current = null;
+      return;
+    }
+    if (startTimestampRef.current === null) {
+      startTimestampRef.current = Date.now();
+      initialTimeLeftRef.current = timeLeftRef.current;
+    }
+
     const id = setInterval(() => {
       if (settingsRef.current.tickSound) playTick();
-      setTimeLeft((t) => {
-        if (t <= 1) {
-          clearInterval(id);
-          handleSessionEnd(false);
-          return 0;
-        }
-        return t - 1;
-      });
+
+      const elapsed = Math.floor((Date.now() - startTimestampRef.current) / 1000);
+      const newTimeLeft = Math.max(0, initialTimeLeftRef.current - elapsed);
+
+      setTimeLeft(newTimeLeft);
+
+      if (newTimeLeft <= 0) {
+        clearInterval(id);
+        handleSessionEnd(false);
+      }
     }, 1000);
     return () => clearInterval(id);
   }, [isRunning, handleSessionEnd]);
@@ -2026,10 +2177,13 @@ export default function PomodoroApp() {
     } else {
       document.title = "Pomodoro Focus App";
     }
+  }, [isRunning, mins, secs, mode]);
+
+  useEffect(() => {
     return () => {
       document.title = "Pomodoro Focus App";
     };
-  }, [isRunning, mins, secs, mode]);
+  }, []);
 
   // ── Scroll selected subject to center ─────────────────────────────────────
   useEffect(() => {
@@ -2055,17 +2209,19 @@ export default function PomodoroApp() {
       return;
     }
     setMode(m);
+    startTimestampRef.current = null;
     setTimeLeft(settings[MODES[m].key] * 60);
   };
 
   const resetTimer = () => {
     if (isRunning) playPause();
     setIsRunning(false);
+    startTimestampRef.current = null;
     setTimeLeft(settings[MODES[mode].key] * 60);
   };
 
   const addFiveMinutes = () => {
-    setTimeLeft((t) => t + 5 * 60);
+    setTimeLeft((t) => Math.min(t + 300, settings.workDuration * 60 + 600));
   };
 
   const skipBreak = () => {
@@ -2079,12 +2235,17 @@ export default function PomodoroApp() {
     const willRun = !isRunning;
     if (willRun) {
       playStart();
+      startTimestampRef.current = Date.now();
+      initialTimeLeftRef.current = timeLeft;
       if (settings.autoPlayMusic && !isMusicPlaying) {
         // slight delay so state is settled before playing
-        setTimeout(() => toggleMusic(), 80);
+        setTimeout(() => {
+          if (toggleMusicRef.current) toggleMusicRef.current();
+        }, 80);
       }
     } else {
       playPause();
+      startTimestampRef.current = null;
     }
     setIsRunning(willRun);
   };
@@ -2098,6 +2259,7 @@ export default function PomodoroApp() {
     // Preserve runtime persisted values
     s.musicVolume = musicVolume;
     s.lastTrackId = currentTrack.id;
+    s.focusTasks = focusTasks;
     // Validate youtube URL if youtube is selected
     if (s.musicSource === "youtube" && s.youtubeUrl) {
       if (!isValidYouTubeUrl(s.youtubeUrl)) {
@@ -2127,12 +2289,7 @@ export default function PomodoroApp() {
       if (fromMain) setIsAddingCustom(false);
       return;
     }
-    // Basic sanitization: prevent script-like subject names
-    if (/<script|javascript:|on\w+=/i.test(val)) {
-      setNewSubjectInput("");
-      if (fromMain) setIsAddingCustom(false);
-      return;
-    }
+
     const all = [...DEFAULT_SUBJECTS, ...(settings.customSubjects || [])];
     if (all.length >= 20) {
       // Cap at 20 subjects max
@@ -2185,93 +2342,93 @@ export default function PomodoroApp() {
 
   // ── Data management helpers (clear today / all) ────────────────────────────
   const clearTodayData = async () => {
-    if (isClearingData) return;
+    if (isClearingRef.current) return;
     const todayLabel = new Date().toLocaleDateString();
-    if (
-      !window.confirm(
-        `Clear all sessions logged for today (${todayLabel})? This cannot be undone.`,
-      )
-    ) {
-      return;
-    }
-    setIsClearingData(true);
-    try {
-      const todayIso = new Date().toISOString().slice(0, 10);
-      const r = await window.storage.list(`sessions:${todayIso}`);
-      const keys = (r && r.keys) || [];
-      if (typeof window.storage.remove === "function") {
-        await Promise.all(
-          keys.map((k) =>
-            window.storage.remove(k.replace("pomodoro_", "")),
-          ),
-        );
-      } else if (typeof localStorage !== "undefined") {
-        keys.forEach((k) => {
-          try {
-            localStorage.removeItem(k);
-          } catch {}
-        });
-      }
-      // Refresh in‑memory history and today count
-      setHistory((prev) =>
-        prev.filter(
-          (s) =>
-            !s.completedAt ||
-            !s.completedAt.startsWith(todayIso) ||
-            s.type !== "work",
-        ),
-      );
-      setSessionCount((c) => 0);
-    } catch {
-      // ignore and fall through
-    } finally {
-      setIsClearingData(false);
-    }
+    setConfirmConfig({
+      message: `Clear all sessions logged for today (${todayLabel})? This cannot be undone.`,
+      onConfirm: async () => {
+        isClearingRef.current = true;
+        setIsClearingData(true);
+        try {
+          const todayIso = new Date().toISOString().slice(0, 10);
+          const r = await window.storage.list(`sessions:${todayIso}`);
+          const keys = (r && r.keys) || [];
+          if (typeof window.storage.remove === "function") {
+            await Promise.all(
+              keys.map((k) =>
+                window.storage.remove(k.replace("pomodoro_", "")),
+              ),
+            );
+          } else if (typeof localStorage !== "undefined") {
+            keys.forEach((k) => {
+              try {
+                localStorage.removeItem(k);
+              } catch {}
+            });
+          }
+          // Refresh in‑memory history and today count
+          setHistory((prev) =>
+            prev.filter(
+              (s) =>
+                !s.completedAt ||
+                !s.completedAt.startsWith(todayIso) ||
+                s.type !== "work",
+            ),
+          );
+          setSessionCount(0);
+        } catch {
+          // ignore and fall through
+        } finally {
+          isClearingRef.current = false;
+          setIsClearingData(false);
+        }
+      },
+    });
   };
 
   const clearAllData = async () => {
-    if (isClearingData) return;
-    if (
-      !window.confirm(
-        "Clear ALL saved sessions and settings on this device? This cannot be undone.",
-      )
-    ) {
-      return;
-    }
-    setIsClearingData(true);
-    try {
-      const r = await window.storage.list("sessions:");
-      const keys = (r && r.keys) || [];
-      if (typeof window.storage.remove === "function") {
-        await Promise.all(
-          keys.map((k) =>
-            window.storage.remove(k.replace("pomodoro_", "")),
-          ),
-        );
-        await window.storage.remove("settings");
-      } else if (typeof localStorage !== "undefined") {
-        keys.forEach((k) => {
-          try {
-            localStorage.removeItem(k);
-          } catch {}
-        });
+    if (isClearingRef.current) return;
+    setConfirmConfig({
+      message: "Clear ALL saved sessions and settings on this device? This cannot be undone.",
+      onConfirm: async () => {
+        isClearingRef.current = true;
+        setIsClearingData(true);
         try {
-          localStorage.removeItem("pomodoro_settings");
-        } catch {}
-      }
-      // Reset in‑memory state
-      setHistory([]);
-      setSessionCount(0);
-      setSettings(DEFAULT_SETTINGS);
-      setSettingsInput(DEFAULT_SETTINGS);
-      setTimeLeft(DEFAULT_SETTINGS.workDuration * 60);
-      setMode("work");
-      setSubject(DEFAULT_SUBJECTS[0]);
-    } catch {
-      // ignore and fall through
-    } finally {
-      setIsClearingData(false);
-    }
+          const r = await window.storage.list("sessions:");
+          const keys = (r && r.keys) || [];
+          if (typeof window.storage.remove === "function") {
+            await Promise.all(
+              keys.map((k) =>
+                window.storage.remove(k.replace("pomodoro_", "")),
+              ),
+            );
+            await window.storage.remove("settings");
+          } else if (typeof localStorage !== "undefined") {
+            keys.forEach((k) => {
+              try {
+                localStorage.removeItem(k);
+              } catch {}
+            });
+            try {
+              localStorage.removeItem("pomodoro_settings");
+            } catch {}
+          }
+          // Reset in‑memory state
+          setHistory([]);
+          setSessionCount(0);
+          setSettings(DEFAULT_SETTINGS);
+          setSettingsInput(DEFAULT_SETTINGS);
+          setTimeLeft(DEFAULT_SETTINGS.workDuration * 60);
+          setMode("work");
+          setSubject(DEFAULT_SUBJECTS[0]);
+        } catch {
+          // ignore and fall through
+        } finally {
+          isClearingRef.current = false;
+          setIsClearingData(false);
+        }
+      },
+    });
   };
 
   // ── Format time helper ─────────────────────────────────────────────────────
@@ -2316,19 +2473,217 @@ export default function PomodoroApp() {
         alignItems: "center",
         justifyContent: "center",
         position: "relative",
-        overflow: "hidden",
+        overflow: view === "timer" ? "hidden" : "auto",
         transition: "background 1.4s ease",
         "--accent": accent,
         "--accent-glow": accent + "aa",
         "--accent-glow-op": accent + "33",
       }}
     >
+      {/* ── Splash Screen ── */}
+      {isSplashActive && (
+        <div className="splash-screen">
+          <div className="splash-logo" style={{ "--accent": ACCENT.work }}>FOCUS</div>
+          <div className="splash-progress">
+            <div className="splash-progress-bar" style={{ "--accent": ACCENT.work }}></div>
+          </div>
+        </div>
+      )}
+
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=JetBrains+Mono:wght@200;300;400&display=swap');
         * { box-sizing: border-box; margin: 0; padding: 0; }
 
         .pomodoro-app-container {
           transition: background 1.4s ease;
+        }
+
+        .chrome {
+          transition: opacity 0.4s ease;
+        }
+        .chrome:hover {
+          opacity: 1 !important;
+        }
+
+        @keyframes splash-out {
+          0% { opacity: 1; visibility: visible; }
+          90% { opacity: 0; visibility: visible; }
+          100% { opacity: 0; visibility: hidden; }
+        }
+
+        .splash-screen {
+          position: fixed;
+          inset: 0;
+          background: #080808;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          z-index: 10000;
+          animation: splash-out 0.8s ease 1.6s forwards;
+        }
+
+        .splash-logo {
+          font-family: 'Syne', sans-serif;
+          font-weight: 800;
+          font-size: 24px;
+          letter-spacing: 0.3em;
+          text-transform: uppercase;
+          color: #d8d8d8;
+          animation: fadeUp 0.6s ease forwards;
+        }
+
+        .splash-progress {
+          width: 40px;
+          height: 1px;
+          background: #1a1a1a;
+          margin-top: 24px;
+          position: relative;
+          overflow: hidden;
+        }
+
+        .splash-progress-bar {
+          position: absolute;
+          top: 0;
+          left: 0;
+          height: 100%;
+          background: var(--accent);
+          width: 0;
+          animation: splash-progress 1.4s cubic-bezier(0.4, 0, 0.2, 1) 0.2s forwards;
+        }
+
+        @keyframes splash-progress {
+          0% { width: 0; }
+          100% { width: 100%; }
+        }
+
+        .view-transition {
+          transition: all 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .focus-grid {
+          display: grid;
+          grid-template-columns: 1fr 1.5fr 1fr;
+          gap: 40px;
+          width: 100%;
+          max-width: 1200px;
+          height: calc(100vh - 160px);
+          align-items: center;
+          padding: 0 40px;
+        }
+
+        @media (max-width: 1000px) {
+          .focus-grid {
+            grid-template-columns: 1fr;
+            height: auto;
+            gap: 32px;
+            padding: 20px;
+          }
+          .focus-side-panel { display: none; }
+        }
+
+        .focus-side-panel {
+          display: flex;
+          flex-direction: column;
+          gap: 20px;
+          height: 100%;
+          justify-content: center;
+        }
+
+        .task-list-container {
+          background: #0d0d0d;
+          border: 1px solid #181818;
+          border-radius: 12px;
+          padding: 20px;
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+          max-height: 280px;
+          overflow: hidden;
+        }
+
+        .task-item {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 8px 0;
+          border-bottom: 1px solid #141414;
+          transition: all 0.2s;
+          position: relative;
+        }
+        .task-item:last-child { border-bottom: none; }
+        .task-item:hover .task-delete { opacity: 0.6; }
+
+        .task-input {
+          background: transparent;
+          border: none;
+          color: #888;
+          font-family: 'Syne', sans-serif;
+          font-size: 13px;
+          flex: 1;
+          outline: none;
+          min-width: 0;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .task-input:focus { color: #d8d8d8; white-space: normal; overflow: visible; }
+        .task-input.completed { text-decoration: line-through; color: #333; }
+
+        .task-checkbox {
+          width: 16px;
+          height: 16px;
+          border: 1px solid #222;
+          border-radius: 4px;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          transition: all 0.2s;
+          flex-shrink: 0;
+        }
+        .task-checkbox.completed {
+          background: var(--accent);
+          border-color: var(--accent);
+        }
+
+        .task-delete {
+          opacity: 0;
+          background: none;
+          border: none;
+          color: #444;
+          cursor: pointer;
+          padding: 4px;
+          display: flex;
+          align-items: center;
+          transition: all 0.2s;
+        }
+        .task-delete:hover { color: #e85b5b; opacity: 1 !important; }
+
+        .stats-summary-container {
+          background: #0d0d0d;
+          border: 1px solid #181818;
+          border-radius: 12px;
+          padding: 20px;
+          display: flex;
+          flex-direction: column;
+          gap: 16px;
+        }
+
+        @media (max-width: 800px) {
+          .focus-grid {
+            grid-template-columns: 1fr;
+            height: auto;
+            gap: 24px;
+            padding: 20px;
+            overflow-y: auto;
+          }
+          .focus-side-panel { display: flex; order: 2; width: 100%; }
+          .focus-grid > div:nth-child(2) { order: 1; } /* Timer in middle */
+          .focus-grid > div:nth-child(3) { order: 3; } /* Tasks at bottom */
+          .view-transition { padding: 60px 15px 20px !important; }
+          .stats-card { grid-template-columns: 1fr !important; }
+          .heatmap-cell { min-width: 10px; }
         }
 
         .btn-mode {
@@ -2626,13 +2981,32 @@ export default function PomodoroApp() {
           background: #0d0d0d; border: 1px solid #181818;
           border-radius: 8px; padding: 20px;
           display: flex; flex-direction: column; gap: 12px;
+          position: relative;
+        }
+        @media (max-width: 600px) {
+          .stats-card { padding: 15px; }
+          .stats-value { font-size: 20px; }
+          .heatmap-cell { min-width: 6px; }
         }
         .stats-title { font-size: 11px; font-weight: 700; color: #444; text-transform: uppercase; letter-spacing: 0.1em; }
         .stats-value { font-size: 24px; font-weight: 300; color: #d8d8d8; font-family: 'JetBrains Mono', monospace; }
         .stats-label { font-size: 10px; color: #2a2a2a; text-transform: uppercase; letter-spacing: 0.05em; }
 
-        .heatmap { display: grid; grid-template-columns: repeat(53, 1fr); gap: 2px; width: 100%; }
-        .heatmap-cell { aspect-ratio: 1/1; border-radius: 1px; background: #111; }
+        .heatmap { 
+          display: grid; 
+          gap: 2px; 
+          width: 100%; 
+          min-width: 0;
+          overflow-x: auto;
+          scrollbar-width: none;
+        }
+        .heatmap::-webkit-scrollbar { display: none; }
+        .heatmap-cell { 
+          aspect-ratio: 1/1; 
+          border-radius: 1px; 
+          background: #111; 
+          min-width: 8px;
+        }
         .heatmap-cell.level-1 { background: var(--h-level-1, #0e4429); }
         .heatmap-cell.level-2 { background: var(--h-level-2, #006d32); }
         .heatmap-cell.level-3 { background: var(--h-level-3, #26a641); }
@@ -2729,7 +3103,7 @@ export default function PomodoroApp() {
             }}
           >
             <button
-              onClick={() => setView("timer")}
+              onClick={() => handleViewChange("timer")}
               style={{
                 background: view === "timer" ? "#1a1a1a" : "transparent",
                 border: "none",
@@ -2747,7 +3121,7 @@ export default function PomodoroApp() {
               Focus
             </button>
             <button
-              onClick={() => setView("stats")}
+              onClick={() => handleViewChange("stats")}
               style={{
                 background: view === "stats" ? "#1a1a1a" : "transparent",
                 border: "none",
@@ -2770,7 +3144,7 @@ export default function PomodoroApp() {
           {/* Show running timer badge when on stats tab */}
           {view === "stats" && isRunning && (
             <button
-              onClick={() => setView("timer")}
+              onClick={() => handleViewChange("timer")}
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -2854,160 +3228,271 @@ export default function PomodoroApp() {
 
       {/* ── Main View Switcher ── */}
       <div
+        className="view-transition"
         style={{
           width: "100%",
           maxWidth: view === "stats" ? 800 : "unset",
-          padding: "80px 20px 40px",
+          padding: view === "timer" ? "80px 0 40px" : "80px 20px 40px",
+          opacity: (isSplashActive || isChangingView) ? 0 : 1,
+          transform: (isSplashActive || isChangingView) ? "translateY(20px)" : "translateY(0)",
+          display: "flex",
+          justifyContent: "center",
+          margin: "0 auto",
         }}
       >
         {view === "timer" ? (
-          <div
-            className="fade-up"
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              gap: 32,
-              zIndex: 1,
-            }}
-          >
-            {/* Mode tabs */}
-            <div
-              className="chrome"
-              style={{
-                display: "flex",
-                gap: 2,
-                background: "#0d0d0d",
-                border: "1px solid #181818",
-                borderRadius: 5,
-                padding: 3,
-                opacity: chromeOp,
-              }}
-            >
-              {Object.entries(MODES).map(([k, { label }]) => (
-                <button
-                  key={k}
-                  className="btn-mode"
-                  style={{ color: mode === k ? accent : "#2e2e2e" }}
-                  onClick={() => switchMode(k)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-
-            {/* Ring */}
-            <div style={{ position: "relative", width: 260, height: 260 }}>
-              <svg
-                width="260"
-                height="260"
-                style={{ transform: "rotate(-90deg)" }}
-              >
-                <defs>
-                  <filter id="glow">
-                    <feGaussianBlur stdDeviation={amb.glowBlur} result="b" />
-                    <feMerge>
-                      <feMergeNode in="b" />
-                      <feMergeNode in="SourceGraphic" />
-                    </feMerge>
-                  </filter>
-                </defs>
-                <circle
-                  cx="130"
-                  cy="130"
-                  r={R}
-                  fill="none"
-                  stroke="#141414"
-                  strokeWidth="1.5"
-                />
-                <circle
-                  cx="130"
-                  cy="130"
-                  r={R}
-                  fill="none"
-                  stroke={accent}
-                  strokeWidth="2"
-                  strokeDasharray={CIRC}
-                  strokeDashoffset={dashOffset}
-                  opacity={amb.glowOp}
-                  filter="url(#glow)"
-                  style={{
-                    transition:
-                      "stroke-dashoffset 1s linear, stroke 0.6s, opacity 0.8s",
-                  }}
-                />
-                <circle
-                  cx="130"
-                  cy="130"
-                  r={R}
-                  fill="none"
-                  stroke={accent}
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                  strokeDasharray={CIRC}
-                  strokeDashoffset={dashOffset}
-                  style={{
-                    transition: "stroke-dashoffset 1s linear, stroke 0.6s",
-                  }}
-                />
-              </svg>
-              <div
-                style={{
-                  position: "absolute",
-                  inset: 0,
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 6,
-                }}
-              >
-                <div
-                  style={{
-                    fontFamily: "'JetBrains Mono', monospace",
-                    fontSize: 60,
-                    fontWeight: 200,
-                    letterSpacing: "-0.03em",
-                    color: "#e0e0e0",
-                    lineHeight: 1,
-                    userSelect: "none",
-                  }}
-                >
-                  <span>{mins}</span>
-                  <span style={{ color: "#252525", fontSize: 44 }}>:</span>
-                  <span>{secs}</span>
-                </div>
-                <div
-                  style={{
-                    fontSize: 10,
-                    color: "#2e2e2e",
-                    letterSpacing: "0.16em",
-                    textTransform: "uppercase",
-                    fontWeight: 600,
-                  }}
-                >
-                  {MODES[mode].label}
+          <div className="focus-grid fade-up">
+            {/* Left Column: Stats Summary */}
+            <div className="focus-side-panel chrome" style={{ opacity: chromeOp }}>
+              <div className="stats-summary-container">
+                <span className="stats-title">Today's Progress</span>
+                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                    <span className="stats-label">Sessions</span>
+                    <span className="stats-value" style={{ fontSize: 20 }}>{sessionCount}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                    <span className="stats-label">Time</span>
+                    <span className="stats-value" style={{ fontSize: 20 }}>
+                      {Math.floor(history.filter(s => s.completedAt.startsWith(new Date().toISOString().slice(0, 10)) && s.type === "work").reduce((acc, s) => acc + (parseFloat(s.duration) || 0), 0) / 60)}h {Math.round(history.filter(s => s.completedAt.startsWith(new Date().toISOString().slice(0, 10)) && s.type === "work").reduce((acc, s) => acc + (parseFloat(s.duration) || 0), 0) % 60)}m
+                    </span>
+                  </div>
+                  <div style={{ marginTop: 8 }}>
+                    <span className="stats-label" style={{ display: "block", marginBottom: 8 }}>Recent Subjects</span>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      {(() => {
+                        const workHistory = history.filter(s => s.type === "work");
+                        const recent = Array.from(new Set(workHistory.slice(0, 20).map(s => s.subject))).slice(0, 3);
+                        return recent.length > 0 ? recent.map(s => (
+                          <div key={s} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <span className="subj-dot" style={{ background: subjectDot(s), width: 4, height: 4 }} />
+                            <span style={{ fontSize: 10, color: "#555", textTransform: "uppercase" }}>{s}</span>
+                          </div>
+                        )) : <span style={{ fontSize: 9, color: "#222" }}>No sessions yet</span>;
+                      })()}
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
 
-            {/* ── Subject selector ── */}
-            {mode === "work" && (
+            {/* Middle Column: Timer & Quote */}
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                gap: 24,
+                zIndex: 1,
+                height: "100%",
+                justifyContent: "center",
+              }}
+            >
+              {/* Quote at Top */}
               <div
+                className="chrome"
                 style={{
                   display: "flex",
                   flexDirection: "column",
                   alignItems: "center",
-                  gap: 14,
+                  gap: 8,
+                  opacity: isRunning ? 0.05 : 0.8,
+                  maxWidth: 380,
+                  textAlign: "center",
+                  transition: "opacity 0.8s ease",
+                  marginBottom: 10,
                 }}
               >
                 <div
+                  style={{
+                    fontStyle: "italic",
+                    fontSize: 12,
+                    color: "#d8d8d8",
+                    lineHeight: 1.5,
+                    fontFamily: "'Syne', sans-serif",
+                    fontWeight: 400,
+                  }}
+                >
+                  "{currentQuote.text}"
+                </div>
+                <div
+                  style={{
+                    fontSize: 9,
+                    color: accent,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.12em",
+                    fontWeight: 700,
+                  }}
+                >
+                  — {currentQuote.author}
+                </div>
+              </div>
+
+              {/* Mode tabs */}
+              <div
+                className="chrome"
+                style={{
+                  display: "flex",
+                  gap: 2,
+                  background: "#0d0d0d",
+                  border: "1px solid #181818",
+                  borderRadius: 5,
+                  padding: 3,
+                  opacity: chromeOp,
+                }}
+              >
+                {Object.entries(MODES).map(([k, { label }]) => (
+                  <button
+                    key={k}
+                    className="btn-mode"
+                    style={{ color: mode === k ? accent : "#2e2e2e" }}
+                    onClick={() => switchMode(k)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Ring */}
+              <div style={{ position: "relative", width: 240, height: 240 }}>
+                <svg
+                  width="240"
+                  height="240"
+                  style={{ transform: "rotate(-90deg)" }}
+                >
+                  <defs>
+                    <filter id="glow">
+                      <feGaussianBlur stdDeviation={amb.glowBlur} result="b" />
+                      <feMerge>
+                        <feMergeNode in="b" />
+                        <feMergeNode in="SourceGraphic" />
+                      </feMerge>
+                    </filter>
+                  </defs>
+                  <circle
+                    cx="120"
+                    cy="120"
+                    r={R - 10}
+                    fill="none"
+                    stroke="#141414"
+                    strokeWidth="1.5"
+                  />
+                  <circle
+                    cx="120"
+                    cy="120"
+                    r={R - 10}
+                    fill="none"
+                    stroke={accent}
+                    strokeWidth="2"
+                    strokeDasharray={2 * Math.PI * (R - 10)}
+                    strokeDashoffset={2 * Math.PI * (R - 10) * (1 - progress)}
+                    opacity={amb.glowOp}
+                    filter="url(#glow)"
+                    style={{
+                      transition:
+                        "stroke-dashoffset 1s linear, stroke 0.6s, opacity 0.8s",
+                    }}
+                  />
+                  <circle
+                    cx="120"
+                    cy="120"
+                    r={R - 10}
+                    fill="none"
+                    stroke={accent}
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeDasharray={2 * Math.PI * (R - 10)}
+                    strokeDashoffset={2 * Math.PI * (R - 10) * (1 - progress)}
+                    style={{
+                      transition: "stroke-dashoffset 1s linear, stroke 0.6s",
+                    }}
+                  />
+                </svg>
+                <div
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 4,
+                  }}
+                >
+                  <div
+                    style={{
+                      fontFamily: "'JetBrains Mono', monospace",
+                      fontSize: 52,
+                      fontWeight: 200,
+                      letterSpacing: "-0.03em",
+                      color: "#e0e0e0",
+                      lineHeight: 1,
+                      userSelect: "none",
+                    }}
+                  >
+                    <span>{mins}</span>
+                    <span style={{ color: "#252525", fontSize: 38 }}>:</span>
+                    <span>{secs}</span>
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 9,
+                      color: "#2e2e2e",
+                      letterSpacing: "0.16em",
+                      textTransform: "uppercase",
+                      fontWeight: 600,
+                    }}
+                  >
+                    {MODES[mode].label}
+                  </div>
+                </div>
+              </div>
+
+              {/* Controls */}
+              <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+                <button
+                  className="btn-icon chrome"
+                  style={{ color: "#2e2e2e", opacity: chromeOp }}
+                  onClick={resetTimer}
+                  aria-label="Reset timer"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                    <path d="M3 3v5h5" />
+                  </svg>
+                </button>
+
+                <button
+                  className="btn-primary"
+                  onClick={toggleRunning}
+                  style={{
+                    background: accent,
+                    color: "#080808",
+                    padding: "12px 48px",
+                  }}
+                >
+                  {isRunning ? "Pause" : timeLeft === settings[MODES[mode].key] * 60 ? "Start" : "Resume"}
+                </button>
+
+                <button
+                  className="btn-icon chrome"
+                  style={{ color: "#2e2e2e", opacity: chromeOp }}
+                  onClick={() => isRunning && handleSessionEnd(true)}
+                  aria-label="Skip session"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <polygon points="5 4 15 12 5 20 5 4" />
+                    <line x1="19" y1="5" x2="19" y2="19" />
+                  </svg>
+                </button>
+              </div>
+
+              {/* Subject selector */}
+              {mode === "work" && (
+                <div
                   ref={scrollRef}
                   className={`subj-scroll-container ${isRunning ? "is-running" : ""}`}
-                  style={{
-                    opacity: subjectOp,
-                    transition: "all 0.6s ease",
-                  }}
+                  style={{ opacity: subjectOp, transition: "all 0.6s ease" }}
                 >
                   {allSubjects.map((s) => {
                     const isActive = subject === s;
@@ -3017,485 +3502,152 @@ export default function PomodoroApp() {
                         key={s}
                         className={`subj-pill ${isActive ? "active" : ""}`}
                         style={{
-                          ...(isActive
-                            ? {
-                                "--accent-glow": subjectDot(s) + "aa",
-                                "--accent-glow-op": subjectDot(s) + "33",
-                              }
-                            : {}),
-                          ...(isRunning && isActive
-                            ? { transform: "scale(1.1)", margin: "0 auto" }
-                            : {}),
+                          ...(isActive ? { "--accent-glow": subjectDot(s) + "aa", "--accent-glow-op": subjectDot(s) + "33" } : {}),
                         }}
                         onClick={() => !isRunning && setSubject(s)}
                       >
-                        <span
-                          className="subj-dot"
-                          style={{
-                            background: isActive ? subjectDot(s) : "#2a2a2a",
-                          }}
-                        />
+                        <span className="subj-dot" style={{ background: isActive ? subjectDot(s) : "#2a2a2a" }} />
                         {s}
                       </button>
                     );
                   })}
                 </div>
-
-                {isAddingCustom || isRunning ? null : (
-                  <button
-                    className="subj-pill"
-                    style={{
-                      borderStyle: "dashed",
-                      borderColor: "#1c1c1c",
-                      fontSize: 10,
-                      padding: "5px 12px",
-                      opacity: subjectOp,
-                    }}
-                    onClick={() => !isRunning && setIsAddingCustom(true)}
-                  >
-                    + Custom
-                  </button>
-                )}
-
-                {isAddingCustom && !isRunning && (
-                  <div
-                    style={{
-                      display: "flex",
-                      gap: 4,
-                      alignItems: "center",
-                      animation: "fadeUp 0.2s ease",
-                    }}
-                  >
-                    <input
-                      autoFocus
-                      className="s-text-input"
-                      style={{
-                        width: 130,
-                        padding: "7px 14px",
-                        fontSize: 11,
-                        height: 32,
-                        borderRadius: 20,
-                      }}
-                      placeholder="Add subject..."
-                      value={newSubjectInput}
-                      onChange={(e) => setNewSubjectInput(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") addCustomSubject(true);
-                        if (e.key === "Escape") setIsAddingCustom(false);
-                      }}
-                      onBlur={() =>
-                        !newSubjectInput && setIsAddingCustom(false)
-                      }
-                      maxLength={30}
-                    />
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Pips */}
-            <div
-              className="chrome"
-              style={{ display: "flex", gap: 7, opacity: chromeOp }}
-            >
-              {[0, 1, 2, 3].map((i) => (
-                <div
-                  key={i}
-                  style={{
-                    width: 5,
-                    height: 5,
-                    borderRadius: "50%",
-                    background: i < pipsFilled ? accent : "#1a1a1a",
-                    transition: "background 0.3s",
-                  }}
-                />
-              ))}
-            </div>
-
-            {/* Controls */}
-            <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
-              <button
-                className="btn-icon chrome"
-                style={{ color: "#2e2e2e", opacity: chromeOp }}
-                onClick={resetTimer}
-                aria-label="Reset timer"
-              >
-                <svg
-                  width="15"
-                  height="15"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                >
-                  <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
-                  <path d="M3 3v5h5" />
-                </svg>
-              </button>
-
-              {mode === "work" && (
-                <button
-                  className="btn-icon chrome"
-                  style={{ color: "#2e2e2e", opacity: chromeOp }}
-                  onClick={addFiveMinutes}
-                  aria-label="Add 5 minutes"
-                  title="Add 5 minutes"
-                >
-                  <svg
-                    width="15"
-                    height="15"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                    strokeLinecap="round"
-                  >
-                    <circle cx="12" cy="12" r="9" />
-                    <line x1="12" y1="8" x2="12" y2="16" />
-                    <line x1="8" y1="12" x2="16" y2="12" />
-                  </svg>
-                </button>
-              )}
-
-              <button
-                className="btn-primary"
-                onClick={toggleRunning}
-                style={{
-                  background: accent,
-                  color: "#080808",
-                  padding: "13px 52px",
-                }}
-              >
-                {isRunning
-                  ? "Pause"
-                  : timeLeft === settings[MODES[mode].key] * 60
-                    ? "Start"
-                    : "Resume"}
-              </button>
-
-              <button
-                className="btn-icon chrome"
-                style={{ color: "#2e2e2e", opacity: chromeOp }}
-                onClick={() => isRunning && handleSessionEnd(true)}
-                aria-label="Skip session"
-                title="Skip session (log partial focus)"
-              >
-                <svg
-                  width="15"
-                  height="15"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <polygon points="5 4 15 12 5 20 5 4" />
-                  <line x1="19" y1="5" x2="19" y2="19" />
-                </svg>
-              </button>
-
-              {mode !== "work" && (
-                <button
-                  className="btn-icon chrome"
-                  style={{ color: "#2e2e2e", opacity: chromeOp }}
-                  onClick={skipBreak}
-                  aria-label="Skip break"
-                  title="Skip break and go back to focus"
-                >
-                  <svg
-                    width="15"
-                    height="15"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <polyline points="7 8 3 12 7 16" />
-                    <line x1="3" y1="12" x2="15" y2="12" />
-                    <polyline points="17 8 21 12 17 16" />
-                  </svg>
-                </button>
               )}
             </div>
 
-            {/* ── Music Player Card (shared UI for both local & YT) ── */}
-            <div className="music-player chrome" style={{ opacity: chromeOp }}>
-              {/* Track info */}
-              <div className="mp-track-info">
-                <div className="mp-icon">
-                  {isLoading ? (
-                    <svg
-                      width="13"
-                      height="13"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="#333"
-                      strokeWidth="2"
-                      style={{ animation: "breathe 1.2s ease-in-out infinite" }}
-                    >
-                      <circle cx="12" cy="12" r="10" />
-                      <path d="M12 6v6l4 2" />
-                    </svg>
-                  ) : isMusicPlaying ? (
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "flex-end",
-                        gap: 2,
-                        height: 14,
-                      }}
-                    >
-                      {[10, 14, 8].map((h, i) => (
-                        <div
-                          key={i}
-                          style={{
-                            width: 2,
-                            background: accent,
-                            borderRadius: 1,
-                            height: h,
-                            animation: `pulse-dot 0.6s ease ${i * 0.2}s infinite`,
-                          }}
-                        />
-                      ))}
+            {/* Right Column: Task List */}
+            <div className="focus-side-panel chrome" style={{ opacity: chromeOp }}>
+              <div className="task-list-container">
+                <span className="stats-title">Focus Tasks</span>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {focusTasks.map((task, index) => (
+                    <div key={task.id} className="task-item">
+                      <div
+                        className={`task-checkbox ${task.completed ? "completed" : ""}`}
+                        onClick={() => handleToggleTask(task.id)}
+                      >
+                        {task.completed && (
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#000" strokeWidth="4">
+                            <polyline points="20 6 9 17 4 12" />
+                          </svg>
+                        )}
+                      </div>
+                      <input
+                        className={`task-input ${task.completed ? "completed" : ""}`}
+                        placeholder={index === 0 ? "Focus task..." : "Next task..."}
+                        value={task.text}
+                        onChange={(e) => handleTaskChange(task.id, e.target.value)}
+                        onKeyDown={(e) => handleTaskKeyDown(e, task.id, index)}
+                      />
+                      {focusTasks.length > 1 && (
+                        <button className="task-delete" onClick={() => handleRemoveTask(task.id)}>
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <line x1="18" y1="6" x2="6" y2="18" />
+                            <line x1="6" y1="6" x2="18" y2="18" />
+                          </svg>
+                        </button>
+                      )}
                     </div>
-                  ) : (
-                    <svg
-                      width="13"
-                      height="13"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="#333"
-                      strokeWidth="2"
+                  ))}
+                  {focusTasks.length < 5 && focusTasks[focusTasks.length - 1].text.trim() && (
+                    <button
+                      onClick={handleAddTask}
+                      style={{
+                        background: "none",
+                        border: "1px dashed #141414",
+                        color: "#333",
+                        fontSize: 10,
+                        padding: "6px",
+                        borderRadius: 4,
+                        cursor: "pointer",
+                        marginTop: 4,
+                        textAlign: "center"
+                      }}
                     >
-                      <path d="M9 18V5l12-2v13" />
-                      <circle cx="6" cy="18" r="3" />
-                      <circle cx="18" cy="16" r="3" />
-                    </svg>
+                      + Add Task
+                    </button>
                   )}
                 </div>
-                <div className="mp-text">
-                  <span
-                    className={`mp-title ${trackTitle.length > 28 ? "scrolling" : ""}`}
-                  >
-                    <span className="mp-title-inner">
+              </div>
+
+              {/* Music Player Card Integrated below tasks */}
+              <div className="music-player" style={{ width: "100%", marginTop: 0, opacity: chromeOp }}>
+                <div className="mp-track-info" style={{ padding: "10px 14px 8px" }}>
+                  <div className="mp-icon" style={{ width: 24, height: 24 }}>
+                    {isLoading ? (
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#333" strokeWidth="2" style={{ animation: "breathe 1.2s ease-in-out infinite" }}><circle cx="12" cy="12" r="10" /><path d="M12 6v6l4 2" /></svg>
+                    ) : isMusicPlaying ? (
+                      <div style={{ display: "flex", alignItems: "flex-end", gap: 1.5, height: 10 }}>
+                        {[6, 10, 5].map((h, i) => (
+                          <div key={i} style={{ width: 1.5, background: accent, height: h, animation: `pulse-dot 0.6s ease ${i * 0.2}s infinite` }} />
+                        ))}
+                      </div>
+                    ) : (
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#333" strokeWidth="2"><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></svg>
+                    )}
+                  </div>
+                  <div className="mp-text" style={{ flex: 1, minWidth: 0 }}>
+                    <span className="mp-title" style={{ fontSize: 10, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "block" }}>
                       {trackTitle}
-                      {trackTitle.length > 28 && (
-                        <span style={{ paddingLeft: 60 }}>{trackTitle}</span>
-                      )}
                     </span>
-                  </span>
-                  <div className="mp-subtitle">
-                    {trackArtist ||
-                      (isMusicPlaying
-                        ? "Now playing"
-                        : isYt
-                          ? ytPlayer
-                            ? "Paused"
-                            : "Ready"
-                          : "Ambiance")}
+                    <div className="mp-subtitle" style={{ fontSize: 8, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                      {trackArtist}
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <div className="mp-vol-row" style={{ gap: 4 }}>
+                      <button
+                        className="mp-ctrl-btn"
+                        style={{ padding: 4 }}
+                        onClick={() => setMusicVolume(v => v > 0 ? 0 : 0.5)}
+                      >
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={musicVolume > 0 ? "#555" : "#333"} strokeWidth="2">
+                          <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                          {musicVolume === 0 && (
+                            <>
+                              <line x1="23" y1="9" x2="17" y2="15" />
+                              <line x1="17" y1="9" x2="23" y2="15" />
+                            </>
+                          )}
+                        </svg>
+                      </button>
+                      <input
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.01"
+                        className="volume-slider"
+                        style={{ width: 40, height: 2 }}
+                        value={musicVolume}
+                        onChange={(e) => setMusicVolume(parseFloat(e.target.value))}
+                      />
+                    </div>
+                    <button className="mp-play-btn" style={{ width: 26, height: 26, minWidth: 26 }} onClick={toggleMusic}>
+                      {isMusicPlaying ? (
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" /></svg>
+                      ) : (
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21 6 3" /></svg>
+                      )}
+                    </button>
                   </div>
                 </div>
-              </div>
-
-              {/* YT URL error notice */}
-              {isYt && ytUrlError && (
-                <div
-                  style={{
-                    padding: "4px 16px 2px",
-                    fontSize: 9,
-                    color: "#e85b5b",
-                    letterSpacing: "0.03em",
-                  }}
-                >
-                  {ytUrlError}
-                </div>
-              )}
-
-              {/* Local track selector pills */}
-              {!isYt && (
-                <div className="mp-track-row">
-                  {AMBIANCE_TRACKS.map((t) => (
-                    <button
-                      key={t.id}
-                      className={`mp-track-btn ${currentTrack.id === t.id ? "active" : ""}`}
-                      onClick={() => switchTrack(t)}
-                    >
-                      {t.name}
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              {/* Progress bar */}
-              <div className="mp-progress">
-                <span className="mp-time">{fmtTime(currentTimeSec)}</span>
-                <div
-                  className="mp-progress-track"
-                  onClick={(e) => {
-                    const r = e.currentTarget.getBoundingClientRect();
-                    seekMusic(
-                      Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)),
-                    );
-                  }}
-                >
-                  <div
-                    className="mp-progress-fill"
-                    style={{
-                      width:
-                        durationSec > 0
-                          ? `${(currentTimeSec / durationSec) * 100}%`
-                          : "0%",
-                      background: accent,
-                    }}
-                  />
-                </div>
-                <span className="mp-time">{fmtTime(durationSec)}</span>
-              </div>
-
-              {/* Controls */}
-              <div className="mp-controls">
-                {/* Volume */}
-                <div className="mp-vol-row">
-                  <button
-                    className="mp-ctrl-btn"
-                    onClick={() => setMusicVolume((v) => (v > 0 ? 0 : 0.5))}
-                    aria-label="Toggle mute"
-                  >
-                    <svg
-                      width="12"
-                      height="12"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke={
-                        musicVolume > 0
-                          ? isMusicPlaying
-                            ? accent
-                            : "#555"
-                          : "#333"
-                      }
-                      strokeWidth="2"
-                    >
-                      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                      {musicVolume > 0 ? (
-                        <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
-                      ) : (
-                        <>
-                          <line x1="23" y1="9" x2="17" y2="15" />
-                          <line x1="17" y1="9" x2="23" y2="15" />
-                        </>
-                      )}
-                    </svg>
-                  </button>
-                  <input
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.01"
-                    className="volume-slider"
-                    value={musicVolume}
-                    onChange={(e) => setMusicVolume(parseFloat(e.target.value))}
-                    aria-label="Volume"
-                  />
-                </div>
-
-                <div style={{ width: 1, height: 16, background: "#1c1c1c" }} />
-
-                {/* Prev — YT only (local has pill selector) */}
-                {isYt && (
-                  <button
-                    className="mp-ctrl-btn"
-                    onClick={ytPrevTrack}
-                    aria-label="Previous"
-                  >
-                    <svg
-                      width="14"
-                      height="14"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      <polygon points="19 20 9 12 19 4 19 20" />
-                      <line x1="5" y1="4" x2="5" y2="20" />
-                    </svg>
-                  </button>
-                )}
-
-                {/* Play / Pause */}
-                <button
-                  className="mp-play-btn"
-                  onClick={toggleMusic}
-                  style={{
-                    color: isMusicPlaying ? accent : "#555",
-                    borderColor: isMusicPlaying ? accent + "44" : "#262626",
-                  }}
-                  aria-label={isMusicPlaying ? "Pause" : "Play"}
-                >
-                  {isMusicPlaying ? (
-                    <svg
-                      width="13"
-                      height="13"
-                      viewBox="0 0 24 24"
-                      fill="currentColor"
-                    >
-                      <rect x="6" y="4" width="4" height="16" rx="1" />
-                      <rect x="14" y="4" width="4" height="16" rx="1" />
-                    </svg>
-                  ) : (
-                    <svg
-                      width="13"
-                      height="13"
-                      viewBox="0 0 24 24"
-                      fill="currentColor"
-                    >
-                      <polygon points="6 3 20 12 6 21 6 3" />
-                    </svg>
-                  )}
-                </button>
-
-                {/* Next — YT only */}
-                {isYt && (
-                  <button
-                    className="mp-ctrl-btn"
-                    onClick={ytNextTrack}
-                    aria-label="Next"
-                  >
-                    <svg
-                      width="14"
-                      height="14"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      <polygon points="5 4 15 12 5 20 5 4" />
-                      <line x1="19" y1="4" x2="19" y2="20" />
-                    </svg>
-                  </button>
+                {/* Track Selector for local mode */}
+                {!isYt && (
+                  <div className="mp-track-row" style={{ padding: "0 14px 10px", justifyContent: "flex-start", gap: 4 }}>
+                    {AMBIANCE_TRACKS.map((t) => (
+                      <button
+                        key={t.id}
+                        className={`mp-track-btn ${currentTrack.id === t.id ? "active" : ""}`}
+                        style={{ fontSize: 7, padding: "2px 6px" }}
+                        onClick={() => switchTrack(t)}
+                      >
+                        {t.name}
+                      </button>
+                    ))}
+                  </div>
                 )}
               </div>
             </div>
-
-            <span
-              className="chrome"
-              style={{
-                fontSize: 10,
-                color: "#222",
-                letterSpacing: "0.14em",
-                textTransform: "uppercase",
-                opacity: chromeOp,
-              }}
-            >
-              Space to start / pause
-            </span>
           </div>
         ) : (
           <>
@@ -3913,6 +4065,73 @@ export default function PomodoroApp() {
             background: "rgba(0,0,0,0.55)",
           }}
         />
+      )}
+
+      {/* ── Confirm Modal ── */}
+      {confirmConfig && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.85)",
+            backdropFilter: "blur(4px)",
+            zIndex: 1000,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 20,
+            animation: "fadeUp 0.2s ease",
+          }}
+        >
+          <div
+            style={{
+              background: "#0d0d0d",
+              border: "1px solid #1c1c1c",
+              borderRadius: 8,
+              padding: 24,
+              maxWidth: 320,
+              width: "100%",
+              display: "flex",
+              flexDirection: "column",
+              gap: 20,
+            }}
+          >
+            <div
+              style={{
+                fontSize: 12,
+                color: "#888",
+                lineHeight: 1.6,
+                letterSpacing: "0.02em",
+              }}
+            >
+              {confirmConfig.message}
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button
+                className="btn-stats-tab"
+                style={{ flex: 1, padding: "10px" }}
+                onClick={() => setConfirmConfig(null)}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn-primary"
+                style={{
+                  flex: 1,
+                  background: accent,
+                  color: "#080808",
+                  padding: "10px",
+                }}
+                onClick={() => {
+                  confirmConfig.onConfirm();
+                  setConfirmConfig(null);
+                }}
+              >
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
