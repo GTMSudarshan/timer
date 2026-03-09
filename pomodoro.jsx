@@ -3262,8 +3262,8 @@ export default function PomodoroApp() {
         {view === "timer" ? (
           <div className="focus-grid fade-up">
             {/* Left Column: Stats Summary */}
-            <div className="focus-side-panel chrome" style={{ opacity: chromeOp }}>
-              <div className="stats-summary-container">
+            <div className="focus-side-panel chrome" style={{ opacity: chromeOp, width: "100%", maxWidth: 280 }}>
+              <div className="stats-summary-container" style={{ width: "100%" }}>
                 <span className="stats-title">Today's Progress</span>
                 <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
@@ -3535,8 +3535,8 @@ export default function PomodoroApp() {
             </div>
 
             {/* Right Column: Task List */}
-            <div className="focus-side-panel chrome" style={{ opacity: chromeOp }}>
-              <div className="task-list-container">
+            <div className="focus-side-panel chrome" style={{ opacity: chromeOp, width: "100%", maxWidth: 280 }}>
+              <div className="task-list-container" style={{ width: "100%" }}>
                 <span className="stats-title">Focus Tasks</span>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {focusTasks.map((task, index) => (
@@ -3590,7 +3590,7 @@ export default function PomodoroApp() {
               </div>
 
               {/* Music Player Card Integrated below tasks */}
-              <div className="music-player" style={{ width: "100%", marginTop: 0, opacity: chromeOp }}>
+              <div className="music-player" style={{ width: "100%", maxWidth: 280, marginTop: 0, opacity: chromeOp }}>
                 <div className="mp-track-info" style={{ padding: "10px 14px 8px" }}>
                   <div className="mp-icon" style={{ width: 24, height: 24 }}>
                     {isLoading ? (
@@ -3605,9 +3605,15 @@ export default function PomodoroApp() {
                       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#333" strokeWidth="2"><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></svg>
                     )}
                   </div>
-                  <div className="mp-text" style={{ flex: 1, minWidth: 0 }}>
-                    <span className="mp-title" style={{ fontSize: 10, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "block" }}>
-                      {trackTitle}
+                  <div className="mp-text" style={{ flex: 1, minWidth: 0, overflow: "hidden" }}>
+                    <span 
+                      className={`mp-title ${trackTitle.length > 25 ? "scrolling" : ""}`}
+                      style={{ fontSize: 10, display: "block" }}
+                    >
+                      <span className="mp-title-inner">
+                        {trackTitle}
+                        {trackTitle.length > 25 && <span style={{ paddingLeft: 40 }}>{trackTitle}</span>}
+                      </span>
                     </span>
                     <div className="mp-subtitle" style={{ fontSize: 8, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                       {trackArtist}
