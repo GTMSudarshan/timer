@@ -1,3 +1,22 @@
+# Dependencies and build output
+node_modules/
+dist/
+.vite/
+coverage/
+
+# Local environment and OS/editor files
+.env
+.env.*
+!.env.example
+*.local
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.tsbuildinfo
+
+# Retired project notes
 custom-instructions.md
 project-knowledge.md
 PROJECT_STATUS.md

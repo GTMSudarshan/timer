@@ -1,40 +1,70 @@
 # Focus Flow — Pomodoro Timer
 
-A clean, distraction-free Pomodoro timer designed to help you stay in the flow. This application combines time management, task tracking, and ambient music into a single, cohesive experience.
+A distraction-free Pomodoro timer with tasks, local analytics, ambient music, and YouTube playback.
 
-## ✨ Features
+Live app: **https://gtmsudarshan.github.io/timer/**
 
-- **3-Column Focus Layout**: All your tools (Stats, Timer, Tasks) on one screen. No scrolling, no distractions.
-- **Dynamic Task List**: Add up to 5 focus tasks. They stay synced and saved as you work.
-- **Ambient & YouTube Music**: Choose between built-in ambient sounds (Rain, Forest, Lo-Fi) or play your favorite YouTube study tracks.
-- **API-Driven Quotes**: Fresh inspiration every time you load the app, pulled from the Quotable API.
-- **Deep Analytics**: 
-  - Visual activity heatmap (Week/Month/Year views).
-  - Detailed session history showing exactly what tasks you completed during each focus block.
-  - Productivity peak tracking and consistency scores.
-- **Full Responsiveness**: Works beautifully on desktop, tablets, and mobile phones.
-- **Splash Animation**: A smooth "FOCUS" loading sequence to set the mood before you start.
+## Features
 
-## 🚀 Getting Started
+- Focus / short break / long break timer with automatic cycle tracking
+- Up to five persistent focus tasks
+- Local statistics: today’s totals, streaks, consistency, weekly/monthly breakdowns, and activity heatmap
+- Ambient audio tracks (Howler.js) or YouTube playback (IFrame API)
+- Adjustable durations, auto-start, tick sound, and music autoplay
+- CSV export of saved sessions with formula-injection protection
+- Responsive layout for desktop, tablet, and mobile
+- Quotes fetched from [`dummyjson.com`](https://dummyjson.com/docs/quotes), with offline fallback quotes
 
-This project is built to run directly in the browser without any complex setup or build steps.
+## Local development
 
-### Local Use
-1. Clone or download this folder.
-2. Open `index.html` in any modern web browser.
-3. Start focusing!
+Requires Node.js 20 or newer.
 
-### Deployment
-You can deploy this instantly to **GitHub Pages**, **Vercel**, or **Netlify**. Since it's a standalone React application using Babel for in-browser transpilation, just upload the files and it will work out of the box.
+```bash
+npm install
+npm run dev
+```
 
-## 🛠️ Built With
+Then open the URL printed by Vite (usually `http://localhost:5173/timer/`).
 
-- **React**: Core UI library.
-- **CSS Grid & Flexbox**: For the responsive, one-screen layout.
-- **Howler.js**: Robust audio management for ambient tracks.
-- **YouTube IFrame API**: Seamless YouTube integration.
-- **Quotable API**: For the dynamic quote library.
-- **Local Storage**: Your settings, tasks, and session history are saved locally in your browser.
+Other scripts:
 
----
-*Stay focused. Stay productive.*
+```bash
+npm test       # unit tests
+npm run lint   # ESLint
+npm run build  # production build into dist/
+npm run preview
+```
+
+The app uses `localStorage`, so settings, tasks, and session history stay on the current browser/device.
+Clearing site data removes them.
+
+## Deployment
+
+Pushes to `master` run `.github/workflows/deploy.yml`, which lints, tests, builds, and publishes `dist/`
+to GitHub Pages using the official Pages actions.
+
+In repository settings, keep **Settings → Pages → Build and deployment → Source** set to
+**GitHub Actions**. The custom domain was removed on purpose; the canonical URL is the `github.io` one.
+
+## Project structure
+
+```text
+src/
+  App.jsx              Main app and UI components
+  main.jsx             React entry point
+  styles.css           Extracted stylesheet
+  lib/
+    audio.js           Shared AudioContext and UI sounds
+    csv.js             CSV building and sanitization
+    dates.js           Local-date helpers
+    storage.js         localStorage wrapper
+    youtube.js         URL parsing and IFrame API loader
+  test/                Test setup
+```
+
+## Notes
+
+- Session dates use the browser’s **local calendar day**, not UTC, so streaks and “Today” are correct
+  around midnight.
+- Audio starts only after a user gesture, as required by modern browsers.
+- The previous single-file/CDN version is still available in Git history as `pomodoro.jsx`.

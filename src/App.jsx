@@ -1,77 +1,23 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-// Recharts imports handled by preview wrapper globally
+import { Howl } from "howler";
 
-// ── Audio ─────────────────────────────────────────────────────────────────────
-// Split into distinct end sounds for focus vs break
-function playTone(freqs, vol = 0.18, spacing = 0.18, type = "sine") {
-  try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    freqs.forEach((freq, i) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.frequency.value = freq;
-      osc.type = type;
-      const t = ctx.currentTime + i * spacing;
-      gain.gain.setValueAtTime(0, t);
-      gain.gain.linearRampToValueAtTime(vol, t + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
-      osc.start(t);
-      osc.stop(t + 0.22);
-    });
-  } catch {}
-}
-
-const playFocusEnd = () => playTone([528, 660, 784, 660], 0.2, 0.14);
-const playBreakEnd = () => playTone([392, 330], 0.12, 0.22);
-const playStart = () => playTone([440, 550], 0.1, 0.1);
-const playPause = () => playTone([330, 260], 0.08, 0.1);
-
-function playTick() {
-  try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.frequency.value = 900;
-    osc.type = "square";
-    gain.gain.setValueAtTime(0, ctx.currentTime);
-    gain.gain.linearRampToValueAtTime(0.04, ctx.currentTime + 0.005);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.04);
-    osc.start(ctx.currentTime);
-    osc.stop(ctx.currentTime + 0.05);
-  } catch {}
-}
-
-function sanitizeCSVField(field) {
-  if (typeof field !== "string") return String(field || "");
-  // Prevent CSV injection: strip leading =, +, -, @, tab, carriage return
-  let cleaned = field.replace(/"/g, '""');
-  if (/^[=+\-@\t\r]/.test(cleaned)) {
-    cleaned = "'" + cleaned;
-  }
-  return cleaned;
-}
-
-function isValidYouTubeUrl(url) {
-  if (!url || typeof url !== "string") return false;
-  try {
-    const parsed = new URL(url);
-    const validHosts = [
-      "www.youtube.com",
-      "youtube.com",
-      "m.youtube.com",
-      "youtu.be",
-      "music.youtube.com",
-    ];
-    return validHosts.includes(parsed.hostname);
-  } catch {
-    // Could be just a video ID (11 chars alphanumeric)
-    return /^[a-zA-Z0-9_-]{11}$/.test(url.trim());
-  }
-}
+import {
+  playFocusEnd,
+  playBreakEnd,
+  playStart,
+  playPause,
+  playTick,
+  unlockAudio,
+  closeAudio,
+} from "./lib/audio.js";
+import { storage } from "./lib/storage.js";
+import { localDateKey, shiftDateKey, sessionDateKey } from "./lib/dates.js";
+import { downloadCSV } from "./lib/csv.js";
+import {
+  parseYouTubeUrl,
+  isValidYouTubeUrl,
+  loadYouTubeIframeAPI,
+} from "./lib/youtube.js";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const DEFAULT_SUBJECTS = ["Physics", "Chemistry", "Math"];
@@ -91,6 +37,12 @@ const DEFAULT_SETTINGS = {
     { id: 1, text: "", completed: false },
   ],
 };
+
+const freshSettings = () => ({
+  ...DEFAULT_SETTINGS,
+  customSubjects: [],
+  focusTasks: DEFAULT_SETTINGS.focusTasks.map((task) => ({ ...task })),
+});
 
 const MODES = {
   work: { label: "Focus", key: "workDuration" },
@@ -256,6 +208,31 @@ function MiniMusicPlayer({
         )}
       </button>
 
+      {isYt && (
+        <>
+          <button
+            className="mp-ctrl-btn"
+            onClick={ytPrevTrack}
+            aria-label="Previous track"
+            title="Previous track"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M6 5h2v14H6zm3 7 9-7v14z" />
+            </svg>
+          </button>
+          <button
+            className="mp-ctrl-btn"
+            onClick={ytNextTrack}
+            aria-label="Next track"
+            title="Next track"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M16 5h2v14h-2zM6 5l9 7-9 7z" />
+            </svg>
+          </button>
+        </>
+      )}
+
       {/* Equalizer bars or music icon */}
       {isMusicPlaying ? (
         <div
@@ -390,163 +367,128 @@ function StatsDashboard({
   subjectDot,
   onClearAllData,
   onClearToday,
+  onExportAll,
 }) {
   const [range, setRange] = useState("year");
   const [selectedDay, setSelectedDay] = useState(null);
 
   const stats = useMemo(() => {
-    const safeHistory = (history || []).filter((s) => {
-      if (!s) return false;
-      if (!s.completedAt || typeof s.completedAt !== "string") return false;
-      if (!s.subject) return false; // Ensure subject exists
-      return true;
+    const safeHistory = (history || []).filter(
+      (s) => s && typeof s.completedAt === "string" && sessionDateKey(s) && s.subject,
+    );
+    const workSessions = safeHistory.filter((s) => s.type === "work");
+
+    // One pass instead of re-filtering the whole history for every day/subject.
+    const byDate = new Map();
+    const subjectMinutes = {};
+    workSessions.forEach((session) => {
+      const key = sessionDateKey(session);
+      const minutes = parseFloat(session.duration) || 0;
+      const bucket = byDate.get(key) || { count: 0, mins: 0 };
+      bucket.count += 1;
+      bucket.mins += minutes;
+      byDate.set(key, bucket);
+      subjectMinutes[session.subject] =
+        (subjectMinutes[session.subject] || 0) + minutes;
     });
 
-    const today = new Date().toISOString().slice(0, 10);
-    const todaySessions = safeHistory.filter(
-      (s) => s.completedAt.startsWith(today) && s.type === "work",
+    const today = localDateKey();
+    const todaySessions = workSessions.filter(
+      (session) => sessionDateKey(session) === today,
     );
-    const todayMins = todaySessions.reduce(
-      (acc, s) => acc + (parseFloat(s.duration) || 0),
-      0,
-    );
-    const totalMins = safeHistory.reduce(
-      (acc, s) => acc + (parseFloat(s.duration) || 0),
+    const todayMins = byDate.get(today)?.mins || 0;
+    const totalMins = workSessions.reduce(
+      (sum, session) => sum + (parseFloat(session.duration) || 0),
       0,
     );
 
-    const breakdownAll = allSubjects.map((name) => ({
+    const breakdownNames = [...new Set([...allSubjects, ...Object.keys(subjectMinutes)])];
+    const breakdownAll = breakdownNames.map((name) => ({
       name,
-      value: safeHistory
-        .filter((s) => s.subject === name && s.type === "work")
-        .reduce((acc, s) => acc + (parseFloat(s.duration) || 0), 0),
+      value: subjectMinutes[name] || 0,
       color: subjectDot(name),
     }));
-    const breakdown =
-      breakdownAll.filter((s) => s.value > 0).length > 0
-        ? breakdownAll.filter((s) => s.value > 0)
-        : breakdownAll;
+    const withTime = breakdownAll.filter((entry) => entry.value > 0);
+    const breakdown = withTime.length ? withTime : breakdownAll;
 
     const days = range === "week" ? 7 : range === "month" ? 31 : 365;
     const activity = [];
-    const now = new Date();
-    // Use local time for generating activity dates to match session logging
-    for (let i = 0; i < days; i++) {
-      const d = new Date(now);
-      d.setDate(d.getDate() - (days - 1 - i));
-      const year = d.getFullYear();
-      const month = String(d.getMonth() + 1).padStart(2, '0');
-      const day = String(d.getDate()).padStart(2, '0');
-      const ds = `${year}-${month}-${day}`;
-      const count = safeHistory.filter(
-        (s) => s.completedAt.startsWith(ds) && s.type === "work",
-      ).length;
-      activity.push({ date: ds, count });
+    for (let index = 0; index < days; index++) {
+      const date = new Date();
+      date.setDate(date.getDate() - (days - 1 - index));
+      const key = localDateKey(date);
+      activity.push({ date: key, count: byDate.get(key)?.count || 0 });
     }
 
-    const dailyCounts = {};
-    const dailyMins = {};
-    safeHistory
-      .filter((s) => s.type === "work")
-      .forEach((s) => {
-        const date = s.completedAt.slice(0, 10);
-        dailyCounts[date] = (dailyCounts[date] || 0) + 1;
-        dailyMins[date] =
-          (dailyMins[date] || 0) + (parseFloat(s.duration) || 0);
-      });
-
-    const peakSessionsInADay = Math.max(0, ...Object.values(dailyCounts));
-    const peakDayDate = Object.keys(dailyCounts).find(
-      (d) => dailyCounts[d] === peakSessionsInADay,
-    );
-    const peakDayMins = peakDayDate ? dailyMins[peakDayDate] : 0;
-
-    const uniqueDays = new Set(safeHistory
-      .filter((s) => s.type === "work")
-      .map((s) => s.completedAt.slice(0, 10))).size;
-    const avgSessions =
-      uniqueDays > 0
-        ? (
-            safeHistory.filter((s) => s.type === "work").length / uniqueDays
-          ).toFixed(1)
-        : 0;
-
-    const workDaySet = new Set(
-      safeHistory
-        .filter((s) => s.type === "work")
-        .map((s) => s.completedAt.slice(0, 10)),
-    );
-    const sortedWorkDays = [...workDaySet].sort();
-    let longestStreak = 0,
-      sCur = 0;
-    sortedWorkDays.forEach((day, i) => {
-      if (i === 0) {
-        sCur = 1;
-      } else {
-        const diff =
-          (new Date(day + "T00:00:00Z") -
-            new Date(sortedWorkDays[i - 1] + "T00:00:00Z")) /
-          86400000;
-        sCur = diff === 1 ? sCur + 1 : 1;
+    let peakDayDate = null;
+    let peakSessionsInADay = 0;
+    byDate.forEach((bucket, date) => {
+      if (bucket.count > peakSessionsInADay) {
+        peakSessionsInADay = bucket.count;
+        peakDayDate = date;
       }
-      longestStreak = Math.max(longestStreak, sCur);
     });
-    const todayISO = today;
-    const yestISO = new Date(Date.now() - 86400000)
-      .toISOString()
-      .slice(0, 10);
-    let currentStreak = 0;
-    const startDay = workDaySet.has(todayISO)
-      ? todayISO
-      : workDaySet.has(yestISO)
-        ? yestISO
+    const peakDayMins = peakDayDate ? byDate.get(peakDayDate).mins : 0;
+
+    const workDaySet = new Set(byDate.keys());
+    const uniqueDays = workDaySet.size;
+    const avgSessions = uniqueDays
+      ? (workSessions.length / uniqueDays).toFixed(1)
+      : 0;
+
+    const sortedWorkDays = [...workDaySet].sort();
+    let longestStreak = 0;
+    let currentRun = 0;
+    sortedWorkDays.forEach((day, index) => {
+      currentRun =
+        index > 0 && shiftDateKey(sortedWorkDays[index - 1], 1) === day
+          ? currentRun + 1
+          : 1;
+      longestStreak = Math.max(longestStreak, currentRun);
+    });
+
+    const yesterday = shiftDateKey(today, -1);
+    let cursor = workDaySet.has(today)
+      ? today
+      : workDaySet.has(yesterday)
+        ? yesterday
         : null;
-    if (startDay) {
-      let d = new Date(startDay + "T00:00:00Z");
-      while (workDaySet.has(d.toISOString().slice(0, 10))) {
-        currentStreak++;
-        d = new Date(d.getTime() - 86400000);
-      }
+    let currentStreak = 0;
+    while (cursor && workDaySet.has(cursor)) {
+      currentStreak += 1;
+      cursor = shiftDateKey(cursor, -1);
     }
 
-    // Simple consistency score over recent window (0–100)
     const windowDays = 21;
     let activeDays = 0;
-    for (let i = 0; i < windowDays; i++) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      const ds = d.toISOString().slice(0, 10);
-      if (dailyCounts[ds]) activeDays++;
+    for (let index = 0; index < windowDays; index++) {
+      if (byDate.has(shiftDateKey(today, -index))) activeDays += 1;
     }
-    const consistencyScore =
-      windowDays > 0 ? Math.round((activeDays / windowDays) * 100) : 0;
+    const consistencyScore = Math.round((activeDays / windowDays) * 100);
     let consistencyLabel = "Getting started";
     if (consistencyScore >= 80) consistencyLabel = "Ultra consistent";
     else if (consistencyScore >= 60) consistencyLabel = "Very steady";
     else if (consistencyScore >= 40) consistencyLabel = "Finding rhythm";
 
-    // Subject minutes for recent windows
-    const weekWindowDays = 7;
-    const monthWindowDays = 30;
-    const todayDate = new Date();
     const weekSubjectMap = {};
     const monthSubjectMap = {};
-    safeHistory
-      .filter((s) => s.type === "work")
-      .forEach((s) => {
-        const dateStr = s.completedAt.slice(0, 10);
-        const d = new Date(dateStr + "T00:00:00Z");
-        const diffDays =
-          (todayDate.getTime() - d.getTime()) / 86400000;
-        const mins = parseFloat(s.duration) || 0;
-        const subj = s.subject || "Unknown";
-        if (diffDays >= 0 && diffDays < weekWindowDays) {
-          weekSubjectMap[subj] = (weekSubjectMap[subj] || 0) + mins;
-        }
-        if (diffDays >= 0 && diffDays < monthWindowDays) {
-          monthSubjectMap[subj] = (monthSubjectMap[subj] || 0) + mins;
-        }
-      });
+    const noonToday = new Date(`${today}T12:00:00`).getTime();
+    workSessions.forEach((session) => {
+      const key = sessionDateKey(session);
+      const minutes = parseFloat(session.duration) || 0;
+      const dayIndex = Math.round(
+        (noonToday - new Date(`${key}T12:00:00`).getTime()) / 86400000,
+      );
+      if (dayIndex >= 0 && dayIndex < 7) {
+        weekSubjectMap[session.subject] =
+          (weekSubjectMap[session.subject] || 0) + minutes;
+      }
+      if (dayIndex >= 0 && dayIndex < 30) {
+        monthSubjectMap[session.subject] =
+          (monthSubjectMap[session.subject] || 0) + minutes;
+      }
+    });
+
     const weekSubjects = allSubjects.map((name) => ({
       name,
       value: weekSubjectMap[name] || 0,
@@ -578,29 +520,8 @@ function StatsDashboard({
   }, [history, allSubjects, subjectDot, range]);
 
   const exportCSV = () => {
-    const rows = [
-      "Subject,Duration (min),Completed At,Type,Music Source,Music Title,Music Artist",
-      ...history.map((s) =>
-        [
-          `"${sanitizeCSVField(s.subject || "")}"`,
-          s.duration || 0,
-          `"${sanitizeCSVField(s.completedAt || "")}"`,
-          `"${sanitizeCSVField(s.type || "")}"`,
-          `"${sanitizeCSVField(s.musicSource || "")}"`,
-          `"${sanitizeCSVField(s.musicTitle || "")}"`,
-          `"${sanitizeCSVField(s.musicArtist || "")}"`,
-        ].join(","),
-      ),
-    ].join("\n");
-    const blob = new Blob([rows], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `study-history-${new Date().toISOString().slice(0, 10)}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 100);
+    if (onExportAll) onExportAll();
+    else downloadCSV(history, `study-history-${localDateKey()}.csv`);
   };
 
   return (
@@ -1042,7 +963,7 @@ function StatsDashboard({
             </div>
             <div className="peak-stat">
               <span className="stats-label" style={{ width: 100 }}>
-                Peak Time
+                Peak Day
               </span>
               <span className="peak-hour">
                 {Math.floor(stats.peakDayMins / 60)}h{" "}
@@ -1075,9 +996,9 @@ function StatsDashboard({
                 fontWeight: 500,
               }}
             >
-              {range === "year" 
-                ? `${new Date().getFullYear()} Timeline` 
-                : range === "month" 
+              {range === "year"
+                ? "Last 12 months"
+                : range === "month"
                   ? `${new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" })} View`
                   : `Last 7 Days Activity`}
             </span>
@@ -1116,8 +1037,17 @@ function StatsDashboard({
               <div
                 key={i}
                 className={`heatmap-cell level-${level}`}
+                role="button"
+                tabIndex={0}
+                aria-label={`${d.date}: ${d.count} sessions`}
                 title={`${d.date}: ${d.count} sessions`}
                 onClick={() => setSelectedDay(d.date)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setSelectedDay(d.date);
+                  }
+                }}
                 style={{ cursor: "pointer" }}
               />
             );
@@ -1127,7 +1057,7 @@ function StatsDashboard({
         {selectedDay &&
           (() => {
             const daySessions = history.filter(
-              (s) => s.completedAt.startsWith(selectedDay) && s.type === "work",
+              (s) => sessionDateKey(s) === selectedDay && s.type === "work",
             );
             const dayMins = daySessions.reduce(
               (acc, s) => acc + (parseFloat(s.duration) || 0),
@@ -1304,18 +1234,17 @@ function StatsDashboard({
 
 // ── Main App ──────────────────────────────────────────────────────────────────
 export default function PomodoroApp() {
-  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+  const [settings, setSettings] = useState(freshSettings);
   const [mode, setMode] = useState("work");
   const [timeLeft, setTimeLeft] = useState(25 * 60);
   const [isRunning, setIsRunning] = useState(false);
   const [sessionCount, setSessionCount] = useState(0);
   const [pomodoroCount, setPomodoroCount] = useState(0);
-  const [howlerAvailable, setHowlerAvailable] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
-  const [settingsInput, setSettingsInput] = useState(DEFAULT_SETTINGS);
+  const [settingsInput, setSettingsInput] = useState(freshSettings);
   const [loaded, setLoaded] = useState(false);
   const [isSplashActive, setIsSplashActive] = useState(true);
-  const [focusTasks, setFocusTasks] = useState(DEFAULT_SETTINGS.focusTasks);
+  const [focusTasks, setFocusTasks] = useState(() => freshSettings().focusTasks);
   const [currentQuote, setCurrentQuote] = useState(QUOTES[0]);
 
   const handleToggleTask = (id) => {
@@ -1325,7 +1254,7 @@ export default function PomodoroApp() {
       const current = settingsRef.current;
       const updatedSettings = { ...current, focusTasks: next };
       settingsRef.current = updatedSettings;
-      window.storage.set("settings", JSON.stringify(updatedSettings));
+      storage.set("settings", JSON.stringify(updatedSettings));
       return next;
     });
   };
@@ -1337,7 +1266,7 @@ export default function PomodoroApp() {
       const current = settingsRef.current;
       const updatedSettings = { ...current, focusTasks: next };
       settingsRef.current = updatedSettings;
-      window.storage.set("settings", JSON.stringify(updatedSettings));
+      storage.set("settings", JSON.stringify(updatedSettings));
       return next;
     });
   };
@@ -1350,7 +1279,7 @@ export default function PomodoroApp() {
       const current = settingsRef.current;
       const updatedSettings = { ...current, focusTasks: next };
       settingsRef.current = updatedSettings;
-      window.storage.set("settings", JSON.stringify(updatedSettings));
+      storage.set("settings", JSON.stringify(updatedSettings));
       return next;
     });
   };
@@ -1363,7 +1292,7 @@ export default function PomodoroApp() {
       const current = settingsRef.current;
       const updatedSettings = { ...current, focusTasks: next };
       settingsRef.current = updatedSettings;
-      window.storage.set("settings", JSON.stringify(updatedSettings));
+      storage.set("settings", JSON.stringify(updatedSettings));
       return next;
     });
   };
@@ -1417,6 +1346,7 @@ export default function PomodoroApp() {
   const scrollRef = useRef(null);
   const ytPlayerRef = useRef(null);
   const lockedTimerRef = useRef(null);
+  const viewTimerRef = useRef(null);
   const autoStartRef = useRef(null);
   const startTimestampRef = useRef(null);
   const initialTimeLeftRef = useRef(0);
@@ -1441,10 +1371,12 @@ export default function PomodoroApp() {
 
   const handleViewChange = (newView) => {
     if (view === newView) return;
+    if (viewTimerRef.current) clearTimeout(viewTimerRef.current);
     setIsChangingView(true);
-    setTimeout(() => {
+    viewTimerRef.current = setTimeout(() => {
       setView(newView);
       setIsChangingView(false);
+      viewTimerRef.current = null;
     }, 300);
   };
 
@@ -1494,11 +1426,20 @@ export default function PomodoroApp() {
   const totalSecs = settings[MODES[mode].key] * 60;
   const progress = totalSecs > 0 ? (totalSecs - timeLeft) / totalSecs : 0;
   const R = 110;
-  const CIRC = 2 * Math.PI * R;
-  const dashOffset = CIRC * (1 - progress);
+  const todayKey = localDateKey();
+  const todayFocusMins = useMemo(
+    () =>
+      history.reduce(
+        (sum, session) =>
+          session?.type === "work" && sessionDateKey(session) === todayKey
+            ? sum + (parseFloat(session.duration) || 0)
+            : sum,
+        0,
+      ),
+    [history, todayKey],
+  );
   const mins = String(Math.floor(timeLeft / 60)).padStart(2, "0");
   const secs = String(timeLeft % 60).padStart(2, "0");
-  const pipsFilled = pomodoroCount % 4;
   const chromeOp = isRunning ? 0.2 : 1;
   const subjectOp = isRunning ? 0.35 : 1;
 
@@ -1514,21 +1455,11 @@ export default function PomodoroApp() {
           setCurrentQuote(randomQuote);
         });
 
-      // Detect Howler availability
-      const isHowlerMissing = typeof window.Howl === "undefined";
-      if (isHowlerMissing) {
-        setHowlerAvailable(false);
-      }
-
       try {
-        const r = await window.storage.get("settings");
+        const r = await storage.get("settings");
         if (r) {
-          const s = { ...DEFAULT_SETTINGS, ...JSON.parse(r.value) };
-
-          // If Howler is missing, auto-switch to youtube
-          if (isHowlerMissing && s.musicSource === "local") {
-            s.musicSource = "youtube";
-          }
+          const parsed = JSON.parse(r.value);
+          const s = { ...freshSettings(), ...(parsed && typeof parsed === "object" ? parsed : {}) };
 
           setSettings(s);
           setSettingsInput(s);
@@ -1540,8 +1471,13 @@ export default function PomodoroApp() {
           }
 
           // Restore focus tasks
-          if (s.focusTasks) {
+          if (Array.isArray(s.focusTasks) && s.focusTasks.length) {
             setFocusTasks(s.focusTasks);
+          }
+
+          // Restore last selected subject
+          if (s.lastSubject && allSubjects.includes(s.lastSubject)) {
+            setSubject(s.lastSubject);
           }
 
           // Restore persisted music volume and track
@@ -1553,37 +1489,37 @@ export default function PomodoroApp() {
             if (found) setCurrentTrack(found);
           }
         } else {
-          // If Howler is missing, default to youtube
-          if (isHowlerMissing) {
-            const s = { ...DEFAULT_SETTINGS, musicSource: "youtube" };
-            setSettings(s);
-            setSettingsInput(s);
-          }
           setTimeLeft(25 * 60);
         }
       } catch {
         setTimeLeft(25 * 60);
       }
       setLoaded(true);
-      // Fade out splash after a small delay
-      setTimeout(() => setIsSplashActive(false), 1200);
+      // Keep the node mounted until its CSS fade-out has actually finished.
+      setTimeout(() => setIsSplashActive(false), 2400);
     })();
+  // allSubjects is read only for one-time restore; adding it would re-run setup on edits.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ── Load today's session count ─────────────────────────────────────────────
   const loadTodaySessionCount = useCallback(async () => {
     try {
-      const today = new Date().toISOString().slice(0, 10);
-      const r = await window.storage.list(`sessions:${today}`);
-      if (r?.keys) {
-        const data = await Promise.all(
-          r.keys.map(async (k) => {
-            const val = await window.storage.get(k.replace("pomodoro_", ""));
-            return val ? JSON.parse(val.value) : null;
-          }),
-        );
-        setSessionCount(data.filter((s) => s?.type === "work").length);
-      }
+      const today = localDateKey();
+      const r = await storage.list(`sessions:${today}`);
+      const keys = r?.keys || [];
+      const data = await Promise.all(
+        keys.map(async (k) => {
+          const val = await storage.get(k);
+          if (!val) return null;
+          try {
+            return JSON.parse(val.value);
+          } catch {
+            return null;
+          }
+        }),
+      );
+      setSessionCount(data.filter((s) => s?.type === "work").length);
     } catch {}
   }, []);
 
@@ -1594,13 +1530,18 @@ export default function PomodoroApp() {
   // ── Load session history ──────────────────────────────────────────────────
   const loadHistory = useCallback(async () => {
     try {
-      const r = await window.storage.list("sessions:");
+      const r = await storage.list("sessions:");
       if (r?.keys) {
         const sorted = r.keys.sort().reverse();
         const data = await Promise.all(
-          sorted.slice(0, 500).map(async (k) => {
-            const val = await window.storage.get(k.replace("pomodoro_", ""));
-            return val ? JSON.parse(val.value) : null;
+          sorted.slice(0, 5000).map(async (k) => {
+            const val = await storage.get(k);
+            if (!val) return null;
+            try {
+              return JSON.parse(val.value);
+            } catch {
+              return null;
+            }
           }),
         );
         setHistory(data.filter(Boolean));
@@ -1611,6 +1552,40 @@ export default function PomodoroApp() {
   useEffect(() => {
     loadHistory();
   }, [loadHistory, sessionCount]);
+
+  // Export every stored session, not just the in-memory window.
+  const exportAllHistory = useCallback(async () => {
+    try {
+      const listed = await storage.list("sessions:");
+      const sessions = await Promise.all(
+        listed.keys.map(async (key) => {
+          const value = await storage.get(key);
+          if (!value) return null;
+          try {
+            return JSON.parse(value.value);
+          } catch {
+            return null;
+          }
+        }),
+      );
+      downloadCSV(
+        sessions.filter(Boolean),
+        `study-history-${localDateKey()}.csv`,
+      );
+    } catch {
+      downloadCSV(history, `study-history-${localDateKey()}.csv`);
+    }
+  }, [history]);
+
+  // Persist the selected subject so a reload doesn't silently reset it.
+  useEffect(() => {
+    if (!loaded) return;
+    const current = settingsRef.current;
+    if (current.lastSubject === subject) return;
+    const updated = { ...current, lastSubject: subject };
+    settingsRef.current = updated;
+    storage.set("settings", JSON.stringify(updated));
+  }, [subject, loaded]);
 
   // ── Volume ref so initYtPlayer can always read the latest value ───────────
   const musicVolumeRef = useRef(musicVolume);
@@ -1633,7 +1608,7 @@ export default function PomodoroApp() {
             lastTrackId: currentTrack.id,
           };
           settingsRef.current = updated;
-          await window.storage.set("settings", JSON.stringify(updated));
+          await storage.set("settings", JSON.stringify(updated));
         }
       } catch {}
     }, 500);
@@ -1642,11 +1617,13 @@ export default function PomodoroApp() {
 
   // ── Stop all local Howls ───────────────────────────────────────────────────
   const stopAllHowls = useCallback(() => {
-    Object.values(howlsRef.current).forEach((h) => {
+    Object.values(howlsRef.current).forEach((howl) => {
       try {
-        h.stop();
+        howl.stop();
+        howl.unload();
       } catch {}
     });
+    howlsRef.current = {};
     if (localProgressRef.current) {
       clearInterval(localProgressRef.current);
       localProgressRef.current = null;
@@ -1670,38 +1647,23 @@ export default function PomodoroApp() {
     setYtDuration(0);
     setYtUrlError("");
 
-    const ytUrl = settingsRef.current.youtubeUrl;
-    if (!isValidYouTubeUrl(ytUrl)) {
+    const parsed = parseYouTubeUrl(settingsRef.current.youtubeUrl);
+    if (!parsed) {
       setYtUrlError(
-        "Invalid YouTube URL. Please use a valid youtube.com or youtu.be link.",
+        "Enter a valid YouTube video URL, playlist URL, or 11-character video ID.",
       );
       setYtLoading(false);
       return;
     }
+    const { videoId, listId } = parsed;
 
     // Container must exist and be visible to the iframe API — we hide it offscreen
     const container = document.getElementById("yt-player-hidden");
     if (!container) return;
-    // Use textContent-safe method to clear
     while (container.firstChild) container.removeChild(container.firstChild);
     const inner = document.createElement("div");
     inner.id = "yt-player-inner";
     container.appendChild(inner);
-
-    let videoId = "";
-    let listId = "";
-    try {
-      const url = new URL(ytUrl);
-      if (url.hostname === "youtu.be") {
-        videoId = url.pathname.slice(1);
-      } else {
-        videoId = url.searchParams.get("v") || "";
-      }
-      listId = url.searchParams.get("list") || "";
-    } catch {
-      // Assume raw video ID
-      videoId = ytUrl.trim();
-    }
 
     setYtLoading(true);
 
@@ -1798,22 +1760,23 @@ export default function PomodoroApp() {
     );
     setIsMusicPlaying(false);
 
-    const tryInit = () => {
-      if (window.YT && window.YT.Player) {
-        setTimeout(() => initYtPlayer(), 150);
-      } else {
-        window.onYouTubeIframeAPIReady = () => initYtPlayer();
-        if (!document.getElementById("yt-api-script")) {
-          const tag = document.createElement("script");
-          tag.id = "yt-api-script";
-          tag.src = "https://www.youtube.com/iframe_api";
-          document.head.appendChild(tag);
+    let cancelled = false;
+    loadYouTubeIframeAPI()
+      .then(() => {
+        if (cancelled) return;
+        setTimeout(() => {
+          if (!cancelled) initYtPlayer();
+        }, 150);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setYtLoading(false);
+          setYtUrlError("Could not load the YouTube player. Check your connection.");
         }
-      }
-    };
-    tryInit();
+      });
 
     return () => {
+      cancelled = true;
       if (ytPlayerRef.current) {
         try {
           ytPlayerRef.current.destroy();
@@ -1896,20 +1859,46 @@ export default function PomodoroApp() {
     };
   }, [isMusicPlaying, settings.musicSource, currentTrack.id]);
 
-  // ── Howler cleanup on unmount ──────────────────────────────────────────────
+  // ── Cleanup on unmount ─────────────────────────────────────────────────────
   useEffect(() => {
     return () => {
       if (localProgressRef.current) clearInterval(localProgressRef.current);
+      if (ytProgressRef.current) clearInterval(ytProgressRef.current);
       if (autoStartRef.current) clearTimeout(autoStartRef.current);
-      Object.values(howlsRef.current).forEach((h) => {
+      if (lockedTimerRef.current) clearTimeout(lockedTimerRef.current);
+      if (viewTimerRef.current) clearTimeout(viewTimerRef.current);
+      Object.values(howlsRef.current).forEach((howl) => {
         try {
-          h.unload();
+          howl.unload();
         } catch {}
       });
+      howlsRef.current = {};
+      if (ytPlayerRef.current) {
+        try {
+          ytPlayerRef.current.destroy();
+        } catch {}
+        ytPlayerRef.current = null;
+      }
+      closeAudio();
     };
   }, []);
 
   // ── Music controls ─────────────────────────────────────────────────────────
+  const getOrCreateHowl = useCallback((track) => {
+    const existing = howlsRef.current[track.id];
+    if (existing) return existing;
+
+    const howl = new Howl({
+      src: [track.url],
+      html5: true,
+      loop: true,
+      volume: musicVolumeRef.current,
+      onload: () => setLocalDuration(howl.duration()),
+    });
+    howlsRef.current[track.id] = howl;
+    return howl;
+  }, []);
+
   const toggleMusic = useCallback(() => {
     if (settings.musicSource === "youtube") {
       if (!ytPlayerRef.current) return;
@@ -1926,20 +1915,7 @@ export default function PomodoroApp() {
       track = AMBIANCE_TRACKS[1];
       setCurrentTrack(track);
     }
-    if (!howlerAvailable) return;
-    let howl = howlsRef.current[track.id];
-    if (!howl) {
-      howl = new window.Howl({
-        src: [track.url],
-        html5: true,
-        loop: true,
-        volume: musicVolumeRef.current,
-        onload: () => {
-          setLocalDuration(howl.duration());
-        },
-      });
-      howlsRef.current[track.id] = howl;
-    }
+    const howl = getOrCreateHowl(track);
     if (isMusicPlaying) {
       howl.pause();
       setIsMusicPlaying(false);
@@ -1947,7 +1923,7 @@ export default function PomodoroApp() {
       howl.play();
       setIsMusicPlaying(true);
     }
-  }, [settings.musicSource, currentTrack, isMusicPlaying]);
+  }, [settings.musicSource, currentTrack, isMusicPlaying, getOrCreateHowl]);
 
   useEffect(() => {
     toggleMusicRef.current = toggleMusic;
@@ -1985,33 +1961,27 @@ export default function PomodoroApp() {
 
   const switchTrack = useCallback(
     (track) => {
-      if (settings.musicSource === "youtube" || !howlerAvailable) return;
-      // Stop & unload previous
-      if (howlsRef.current[currentTrack.id]) {
+      if (settings.musicSource === "youtube") return;
+      // Howler instances are not reusable across track changes; unload them
+      // instead of leaving a new Howl in the map every time.
+      Object.entries(howlsRef.current).forEach(([id, howl]) => {
         try {
-          howlsRef.current[currentTrack.id].stop();
+          howl.stop();
+          howl.unload();
         } catch {}
-      }
+        delete howlsRef.current[id];
+      });
       setLocalCurrentTime(0);
       setLocalDuration(0);
       setCurrentTrack(track);
       setIsMusicPlaying(false);
       if (track.id !== "none") {
-        const howl = new window.Howl({
-          src: [track.url],
-          html5: true,
-          loop: true,
-          volume: musicVolumeRef.current,
-          onload: () => {
-            setLocalDuration(howl.duration());
-          },
-        });
-        howlsRef.current[track.id] = howl;
+        const howl = getOrCreateHowl(track);
         howl.play();
         setIsMusicPlaying(true);
       }
     },
-    [settings.musicSource, currentTrack.id],
+    [settings.musicSource, getOrCreateHowl],
   );
 
   // Volume sync
@@ -2044,9 +2014,9 @@ export default function PomodoroApp() {
 
     if (m === "work") {
       const now = new Date();
-      const dateStr = now.toISOString().slice(0, 10);
+      const dateStr = localDateKey(now);
       const totalDurationSecs = s.workDuration * 60;
-      const elapsedSecs = totalDurationSecs - timeLeftRef.current;
+      const elapsedSecs = Math.max(0, totalDurationSecs - timeLeftRef.current);
       // Only save if at least 30 seconds elapsed (prevent accidental saves)
       const actualMins = Math.round((elapsedSecs / 60) * 100) / 100;
       if (elapsedSecs >= 30 || !skipped) {
@@ -2071,7 +2041,7 @@ export default function PomodoroApp() {
                 }
               : { musicSource: "none", musicTitle: "", musicArtist: "" };
         try {
-          await window.storage.set(
+          await storage.set(
             `sessions:${dateStr}-${now.getTime()}`,
             JSON.stringify({
               subject: sub,
@@ -2085,23 +2055,30 @@ export default function PomodoroApp() {
         } catch {}
         loadTodaySessionCount();
       }
-      setPomodoroCount((p) => {
-        const next = (p + 1) % 4;
-        // Persist pomodoroCount
-        const currentSettings = settingsRef.current;
-        const updatedSettings = { ...currentSettings, pomodoroCount: next };
-        settingsRef.current = updatedSettings;
-        window.storage.set("settings", JSON.stringify(updatedSettings));
+      if (skipped) {
+        // Skipping focus work must not earn a long break.
+        setMode("short");
+        setTimeLeft(s.shortBreak * 60);
+      } else {
+        setPomodoroCount((previous) => {
+          const next = (previous + 1) % 4;
+          const updatedSettings = {
+            ...settingsRef.current,
+            pomodoroCount: next,
+          };
+          settingsRef.current = updatedSettings;
+          storage.set("settings", JSON.stringify(updatedSettings));
 
-        if (next === 0) {
-          setMode("long");
-          setTimeLeft(s.longBreak * 60);
-        } else {
-          setMode("short");
-          setTimeLeft(s.shortBreak * 60);
-        }
-        return next;
-      });
+          if (next === 0) {
+            setMode("long");
+            setTimeLeft(s.longBreak * 60);
+          } else {
+            setMode("short");
+            setTimeLeft(s.shortBreak * 60);
+          }
+          return next;
+        });
+      }
     } else {
       setMode("work");
       setTimeLeft(s.workDuration * 60);
@@ -2110,11 +2087,12 @@ export default function PomodoroApp() {
     if (s.autoStart) {
       if (autoStartRef.current) clearTimeout(autoStartRef.current);
       autoStartRef.current = setTimeout(() => {
+        autoStartRef.current = null;
         playStart();
         setIsRunning(true);
       }, 1000);
     }
-  }, []);
+  }, [loadTodaySessionCount]);
 
   // ── Timer tick ─────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -2149,6 +2127,8 @@ export default function PomodoroApp() {
       if (e.code === "Space" && e.target === document.body && !showSettings) {
         e.preventDefault();
         if (view !== "timer") return; // Only toggle timer from timer view
+        unlockAudio();
+        clearAutoStart();
         setIsRunning((r) => {
           r ? playPause() : playStart();
           return !r;
@@ -2159,16 +2139,17 @@ export default function PomodoroApp() {
     return () => window.removeEventListener("keydown", h);
   }, [showSettings, view]);
 
-  // ── Escape key closes settings drawer ──────────────────────────────────────
+  // ── Escape key closes settings drawer and discards unsaved edits ──────────
   useEffect(() => {
     const h = (e) => {
       if (e.key === "Escape" && showSettings) {
+        setSettingsInput(settings);
         setShowSettings(false);
       }
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
-  }, [showSettings]);
+  }, [showSettings, settings]);
 
   // ── Document title reflects timer state ────────────────────────────────────
   useEffect(() => {
@@ -2200,6 +2181,13 @@ export default function PomodoroApp() {
     return () => clearTimeout(timer);
   }, [subject, isAddingCustom, allSubjects.length]);
 
+  const clearAutoStart = () => {
+    if (autoStartRef.current) {
+      clearTimeout(autoStartRef.current);
+      autoStartRef.current = null;
+    }
+  };
+
   // ── Mode switch — blocked while running ────────────────────────────────────
   const switchMode = (m) => {
     if (isRunning) {
@@ -2208,12 +2196,14 @@ export default function PomodoroApp() {
       lockedTimerRef.current = setTimeout(() => setLockedNotice(false), 2000);
       return;
     }
+    clearAutoStart();
     setMode(m);
     startTimestampRef.current = null;
     setTimeLeft(settings[MODES[m].key] * 60);
   };
 
   const resetTimer = () => {
+    clearAutoStart();
     if (isRunning) playPause();
     setIsRunning(false);
     startTimestampRef.current = null;
@@ -2221,11 +2211,13 @@ export default function PomodoroApp() {
   };
 
   const addFiveMinutes = () => {
-    setTimeLeft((t) => Math.min(t + 300, settings.workDuration * 60 + 600));
+    const max = settings[MODES[mode].key] * 60 + 600;
+    setTimeLeft((current) => Math.min(current + 300, max));
   };
 
   const skipBreak = () => {
     if (mode === "work") return;
+    clearAutoStart();
     setIsRunning(false);
     setTimeLeft(settings.workDuration * 60);
     setMode("work");
@@ -2233,17 +2225,19 @@ export default function PomodoroApp() {
 
   const toggleRunning = () => {
     const willRun = !isRunning;
+    unlockAudio();
     if (willRun) {
+      clearAutoStart();
       playStart();
       startTimestampRef.current = Date.now();
       initialTimeLeftRef.current = timeLeft;
       if (settings.autoPlayMusic && !isMusicPlaying) {
-        // slight delay so state is settled before playing
         setTimeout(() => {
           if (toggleMusicRef.current) toggleMusicRef.current();
         }, 80);
       }
     } else {
+      clearAutoStart();
       playPause();
       startTimestampRef.current = null;
     }
@@ -2251,7 +2245,7 @@ export default function PomodoroApp() {
   };
 
   // ── Settings save ──────────────────────────────────────────────────────────
-  const saveSettings = async () => {
+  const applySettings = async () => {
     const s = { ...settingsInput };
     ["workDuration", "shortBreak", "longBreak"].forEach((k) => {
       s[k] = Math.max(1, Math.min(120, parseInt(s[k]) || 1));
@@ -2259,6 +2253,7 @@ export default function PomodoroApp() {
     // Preserve runtime persisted values
     s.musicVolume = musicVolume;
     s.lastTrackId = currentTrack.id;
+    s.lastSubject = subject;
     s.focusTasks = focusTasks;
     // Validate youtube URL if youtube is selected
     if (s.musicSource === "youtube" && s.youtubeUrl) {
@@ -2275,11 +2270,30 @@ export default function PomodoroApp() {
     );
     setSettings(s);
     try {
-      await window.storage.set("settings", JSON.stringify(s));
+      await storage.set("settings", JSON.stringify(s));
     } catch {}
     setTimeLeft(s[MODES[mode].key] * 60);
     setIsRunning(false);
     setShowSettings(false);
+  };
+
+  const closeSettings = () => {
+    setSettingsInput(settings);
+    setShowSettings(false);
+  };
+
+  const saveSettings = () => {
+    if (isRunning) {
+      setConfirmConfig({
+        message: "Saving settings will stop the running timer. Continue?",
+        onConfirm: async () => {
+          clearAutoStart();
+          await applySettings();
+        },
+      });
+      return;
+    }
+    applySettings();
   };
 
   // ── Custom subject management ──────────────────────────────────────────────
@@ -2314,7 +2328,7 @@ export default function PomodoroApp() {
     if (fromMain) setIsAddingCustom(false);
 
     try {
-      await window.storage.set("settings", JSON.stringify(newSettings));
+      await storage.set("settings", JSON.stringify(newSettings));
     } catch {}
   };
 
@@ -2327,7 +2341,7 @@ export default function PomodoroApp() {
     setSettingsInput((s) => ({ ...s, customSubjects: newCustomSubjects }));
     if (subject === subj) setSubject(DEFAULT_SUBJECTS[0]);
     try {
-      await window.storage.set("settings", JSON.stringify(newSettings));
+      await storage.set("settings", JSON.stringify(newSettings));
     } catch {}
   };
 
@@ -2350,30 +2364,13 @@ export default function PomodoroApp() {
         isClearingRef.current = true;
         setIsClearingData(true);
         try {
-          const todayIso = new Date().toISOString().slice(0, 10);
-          const r = await window.storage.list(`sessions:${todayIso}`);
+          const todayKey = localDateKey();
+          const r = await storage.list(`sessions:${todayKey}`);
           const keys = (r && r.keys) || [];
-          if (typeof window.storage.remove === "function") {
-            await Promise.all(
-              keys.map((k) =>
-                window.storage.remove(k.replace("pomodoro_", "")),
-              ),
-            );
-          } else if (typeof localStorage !== "undefined") {
-            keys.forEach((k) => {
-              try {
-                localStorage.removeItem(k);
-              } catch {}
-            });
-          }
-          // Refresh in‑memory history and today count
+          await Promise.all(keys.map((key) => storage.remove(key)));
+          // Refresh in-memory history and today count
           setHistory((prev) =>
-            prev.filter(
-              (s) =>
-                !s.completedAt ||
-                !s.completedAt.startsWith(todayIso) ||
-                s.type !== "work",
-            ),
+            prev.filter((session) => sessionDateKey(session) !== todayKey),
           );
           setSessionCount(0);
         } catch {
@@ -2394,31 +2391,31 @@ export default function PomodoroApp() {
         isClearingRef.current = true;
         setIsClearingData(true);
         try {
-          const r = await window.storage.list("sessions:");
+          const r = await storage.list("sessions:");
           const keys = (r && r.keys) || [];
-          if (typeof window.storage.remove === "function") {
-            await Promise.all(
-              keys.map((k) =>
-                window.storage.remove(k.replace("pomodoro_", "")),
-              ),
-            );
-            await window.storage.remove("settings");
-          } else if (typeof localStorage !== "undefined") {
-            keys.forEach((k) => {
-              try {
-                localStorage.removeItem(k);
-              } catch {}
-            });
-            try {
-              localStorage.removeItem("pomodoro_settings");
-            } catch {}
-          }
-          // Reset in‑memory state
+          await Promise.all(keys.map((key) => storage.remove(key)));
+          await storage.remove("settings");
+          clearAutoStart();
+          // Reset in-memory state
           setHistory([]);
           setSessionCount(0);
-          setSettings(DEFAULT_SETTINGS);
-          setSettingsInput(DEFAULT_SETTINGS);
-          setTimeLeft(DEFAULT_SETTINGS.workDuration * 60);
+          const defaults = freshSettings();
+          setSettings(defaults);
+          setSettingsInput(freshSettings());
+          setFocusTasks(defaults.focusTasks);
+          setMusicVolume(defaults.musicVolume);
+          setCurrentTrack(AMBIANCE_TRACKS[0]);
+          setIsMusicPlaying(false);
+          setPomodoroCount(0);
+          stopAllHowls();
+          if (ytPlayerRef.current) {
+            try {
+              ytPlayerRef.current.destroy();
+            } catch {}
+            ytPlayerRef.current = null;
+          }
+          setYtPlayer(null);
+          setTimeLeft(defaults.workDuration * 60);
           setMode("work");
           setSubject(DEFAULT_SUBJECTS[0]);
         } catch {
@@ -2473,7 +2470,7 @@ export default function PomodoroApp() {
         alignItems: "center",
         justifyContent: "center",
         position: "relative",
-        overflow: view === "timer" ? "hidden" : "auto",
+        overflow: "auto",
         transition: "background 1.4s ease",
         "--accent": accent,
         "--accent-glow": accent + "aa",
@@ -2490,566 +2487,7 @@ export default function PomodoroApp() {
         </div>
       )}
 
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=JetBrains+Mono:wght@200;300;400&display=swap');
-        * { box-sizing: border-box; margin: 0; padding: 0; }
 
-        .pomodoro-app-container {
-          transition: background 1.4s ease;
-        }
-
-        .chrome {
-          transition: opacity 0.4s ease;
-        }
-        .chrome:hover {
-          opacity: 1 !important;
-        }
-
-        @keyframes splash-out {
-          0% { opacity: 1; visibility: visible; }
-          90% { opacity: 0; visibility: visible; }
-          100% { opacity: 0; visibility: hidden; }
-        }
-
-        .splash-screen {
-          position: fixed;
-          inset: 0;
-          background: #080808;
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          justify-content: center;
-          z-index: 10000;
-          animation: splash-out 0.8s ease 1.6s forwards;
-        }
-
-        .splash-logo {
-          font-family: 'Syne', sans-serif;
-          font-weight: 800;
-          font-size: 24px;
-          letter-spacing: 0.3em;
-          text-transform: uppercase;
-          color: #d8d8d8;
-          animation: fadeUp 0.6s ease forwards;
-        }
-
-        .splash-progress {
-          width: 40px;
-          height: 1px;
-          background: #1a1a1a;
-          margin-top: 24px;
-          position: relative;
-          overflow: hidden;
-        }
-
-        .splash-progress-bar {
-          position: absolute;
-          top: 0;
-          left: 0;
-          height: 100%;
-          background: var(--accent);
-          width: 0;
-          animation: splash-progress 1.4s cubic-bezier(0.4, 0, 0.2, 1) 0.2s forwards;
-        }
-
-        @keyframes splash-progress {
-          0% { width: 0; }
-          100% { width: 100%; }
-        }
-
-        .view-transition {
-          transition: all 0.6s cubic-bezier(0.4, 0, 0.2, 1);
-        }
-
-        .focus-grid {
-          display: grid;
-          grid-template-columns: 1fr 1.5fr 1fr;
-          gap: 40px;
-          width: 100%;
-          max-width: 1200px;
-          height: calc(100vh - 160px);
-          align-items: center;
-          padding: 0 40px;
-        }
-
-        @media (max-width: 1000px) {
-          .focus-grid {
-            grid-template-columns: 1fr;
-            height: auto;
-            gap: 32px;
-            padding: 20px;
-          }
-          .focus-side-panel { display: none; }
-        }
-
-        .focus-side-panel {
-          display: flex;
-          flex-direction: column;
-          gap: 20px;
-          height: 100%;
-          justify-content: center;
-        }
-
-        .task-list-container {
-          background: #0d0d0d;
-          border: 1px solid #181818;
-          border-radius: 12px;
-          padding: 20px;
-          display: flex;
-          flex-direction: column;
-          gap: 12px;
-          max-height: 280px;
-          overflow: hidden;
-        }
-
-        .task-item {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          padding: 8px 0;
-          border-bottom: 1px solid #141414;
-          transition: all 0.2s;
-          position: relative;
-        }
-        .task-item:last-child { border-bottom: none; }
-        .task-item:hover .task-delete { opacity: 0.6; }
-
-        .task-input {
-          background: transparent;
-          border: none;
-          color: #888;
-          font-family: 'Syne', sans-serif;
-          font-size: 13px;
-          flex: 1;
-          outline: none;
-          min-width: 0;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-        .task-input:focus { color: #d8d8d8; white-space: normal; overflow: visible; }
-        .task-input.completed { text-decoration: line-through; color: #333; }
-
-        .task-checkbox {
-          width: 16px;
-          height: 16px;
-          border: 1px solid #222;
-          border-radius: 4px;
-          cursor: pointer;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          transition: all 0.2s;
-          flex-shrink: 0;
-        }
-        .task-checkbox.completed {
-          background: var(--accent);
-          border-color: var(--accent);
-        }
-
-        .task-delete {
-          opacity: 0;
-          background: none;
-          border: none;
-          color: #444;
-          cursor: pointer;
-          padding: 4px;
-          display: flex;
-          align-items: center;
-          transition: all 0.2s;
-        }
-        .task-delete:hover { color: #e85b5b; opacity: 1 !important; }
-
-        .stats-summary-container {
-          background: #0d0d0d;
-          border: 1px solid #181818;
-          border-radius: 12px;
-          padding: 20px;
-          display: flex;
-          flex-direction: column;
-          gap: 16px;
-        }
-
-        @media (max-width: 800px) {
-          .focus-grid {
-            display: flex;
-            flex-direction: column;
-            height: auto;
-            gap: 20px;
-            padding: 20px 15px;
-            overflow-y: visible;
-            align-items: center;
-          }
-          .focus-side-panel { 
-            display: flex; 
-            width: 100%; 
-            height: auto;
-            justify-content: flex-start;
-          }
-          /* Re-order: Timer first, then Stats, then Tasks */
-          .focus-grid > div:nth-child(1) { order: 2; } /* Left panel (Stats) */
-          .focus-grid > div:nth-child(2) { order: 1; width: 100%; } /* Middle (Timer) */
-          .focus-grid > div:nth-child(3) { order: 3; } /* Right panel (Tasks) */
-          
-          .view-transition { 
-            padding: 70px 10px 40px !important; 
-            height: auto;
-            min-height: 100vh;
-            overflow-y: auto;
-          }
-          .stats-card { grid-template-columns: 1fr !important; }
-          .heatmap-cell { min-width: 10px; }
-          
-          /* Scale down timer ring slightly for small phones */
-          svg { transform: scale(0.9) rotate(-90deg); }
-          .subj-scroll-container { max-width: 100%; padding: 10px 40px; }
-        }
-
-        .btn-mode {
-          background: none; border: none; cursor: pointer;
-          padding: 5px 14px; border-radius: 4px;
-          font-family: 'Syne', sans-serif; font-size: 11px;
-          font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase;
-          transition: color 0.25s;
-        }
-        .btn-icon {
-          background: none; border: none; cursor: pointer;
-          padding: 6px; display: flex; align-items: center;
-          transition: color 0.2s; border-radius: 3px;
-        }
-        .btn-primary {
-          border: none; cursor: pointer; border-radius: 3px;
-          font-family: 'Syne', sans-serif; font-weight: 700;
-          font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase;
-          transition: opacity 0.15s, transform 0.1s;
-        }
-        .btn-primary:hover { opacity: 0.85; transform: translateY(-1px); }
-        .btn-primary:active { transform: translateY(0); opacity: 0.7; }
-
-        .subj-pill {
-          display: flex; align-items: center; gap: 6px;
-          background: #0d0d0d; border: 1px solid #1c1c1c;
-          border-radius: 20px; padding: 6px 16px;
-          font-family: 'Syne', sans-serif; font-size: 11px;
-          font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
-          cursor: pointer; color: #444;
-          transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-          white-space: nowrap;
-          scroll-snap-align: center;
-          flex-shrink: 0;
-        }
-        .subj-pill:hover { color: #888; border-color: #2e2e2e; transform: translateY(-1px); }
-        .subj-pill.active {
-          color: #d8d8d8;
-          border-color: var(--accent-glow);
-          background: #121212;
-          box-shadow: 0 0 15px var(--accent-glow-op);
-          transform: scale(1.05);
-        }
-        .subj-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; transition: background 0.3s; }
-
-        .subj-scroll-container {
-          display: flex; gap: 10px; padding: 10px 180px;
-          overflow-x: auto; scroll-snap-type: x mandatory;
-          width: 100%; max-width: 480px;
-          scrollbar-width: none; -ms-overflow-style: none;
-          mask-image: linear-gradient(to right, transparent, black 25%, black 75%, transparent);
-          -webkit-mask-image: linear-gradient(to right, transparent, black 25%, black 75%, transparent);
-          position: relative;
-          user-select: none;
-          transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
-        }
-        .subj-scroll-container.is-running {
-          padding: 10px 0;
-          mask-image: none;
-          -webkit-mask-image: none;
-          justify-content: center;
-          overflow: visible;
-        }
-        .subj-scroll-container::-webkit-scrollbar { display: none; }
-
-        .toggle {
-          width: 30px; height: 16px; border-radius: 8px;
-          border: none; cursor: pointer; position: relative;
-          transition: background 0.25s; flex-shrink: 0;
-        }
-        .toggle-knob {
-          position: absolute; top: 2px;
-          width: 12px; height: 12px; border-radius: 50%;
-          background: #080808; transition: left 0.2s;
-        }
-
-        .settings-drawer {
-          position: fixed; top: 0; right: 0;
-          height: 100vh; width: 270px;
-          background: #0c0c0c; border-left: 1px solid #191919;
-          padding: 28px 22px 28px; z-index: 100;
-          transform: translateX(100%); transition: transform 0.28s ease;
-          display: flex; flex-direction: column; gap: 18px;
-          overflow-y: auto;
-        }
-        .settings-drawer.open { transform: translateX(0); }
-        .settings-drawer::-webkit-scrollbar { width: 3px; }
-        .settings-drawer::-webkit-scrollbar-track { background: transparent; }
-        .settings-drawer::-webkit-scrollbar-thumb { background: #1e1e1e; border-radius: 2px; }
-
-        .s-label { font-size: 10px; color: #555; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; }
-        .s-row { display: flex; justify-content: space-between; align-items: center; }
-        .s-name { font-size: 12px; color: #404040; font-weight: 500; }
-        .s-hint { font-size: 10px; color: #282828; margin-top: 2px; }
-        .s-divider { border: none; border-top: 1px solid #141414; }
-
-        .s-input {
-          background: #080808; border: 1px solid #1c1c1c; color: #aaa;
-          padding: 7px 10px; border-radius: 3px;
-          font-family: 'JetBrains Mono', monospace; font-size: 13px;
-          width: 62px; text-align: center; transition: border-color 0.2s;
-          -moz-appearance: textfield;
-        }
-        .s-input::-webkit-inner-spin-button,
-        .s-input::-webkit-outer-spin-button { -webkit-appearance: none; }
-        .s-input:focus { outline: none; }
-
-        .s-text-input {
-          flex: 1; background: #080808; border: 1px solid #1c1c1c; color: #aaa;
-          padding: 7px 10px; border-radius: 3px;
-          font-family: 'Syne', sans-serif; font-size: 12px;
-          transition: border-color 0.2s;
-        }
-        .s-text-input:focus { outline: none; border-color: #333; }
-        .s-text-input::placeholder { color: #2a2a2a; }
-
-        .s-add-btn {
-          background: #141414; border: 1px solid #1e1e1e;
-          color: #444; padding: 7px 12px; border-radius: 3px;
-          font-family: 'Syne', sans-serif; font-size: 11px;
-          font-weight: 600; cursor: pointer; white-space: nowrap;
-          transition: color 0.2s, border-color 0.2s;
-        }
-        .s-add-btn:hover { color: #777; border-color: #2e2e2e; }
-
-        .s-subj-tag {
-          display: flex; align-items: center; justify-content: space-between;
-          padding: 5px 10px; background: #0d0d0d;
-          border: 1px solid #181818; border-radius: 3px;
-        }
-        .s-subj-remove {
-          background: none; border: none; cursor: pointer;
-          color: #2a2a2a; display: flex; align-items: center;
-          transition: color 0.15s; padding: 2px;
-        }
-        .s-subj-remove:hover { color: #666; }
-        .s-subj-default {
-          padding: 5px 10px; background: #090909;
-          border: 1px solid #151515; border-radius: 3px;
-          font-size: 11px; color: #2e2e2e; letter-spacing: 0.04em;
-        }
-
-        .s-error {
-          font-size: 9px; color: #e85b5b; letter-spacing: 0.04em;
-          margin-top: 2px; animation: fadeUp 0.2s ease;
-        }
-
-        @keyframes fadeUp {
-          from { opacity: 0; transform: translateY(10px); }
-          to   { opacity: 1; transform: translateY(0); }
-        }
-        .fade-up { animation: fadeUp 0.45s ease forwards; }
-
-        @keyframes breathe {
-          0%,100% { opacity: 0.4; }
-          50%      { opacity: 1; }
-        }
-
-        @keyframes pulse-dot {
-          0%,100% { opacity: 0.4; }
-          50%      { opacity: 1; }
-        }
-
-        @keyframes marquee {
-          0%   { transform: translateX(0); }
-          100% { transform: translateX(-50%); }
-        }
-
-        .lock-toast {
-          position: fixed; top: 58px; left: 50%;
-          transform: translateX(-50%);
-          background: #111; border: 1px solid #232323;
-          border-radius: 4px; padding: 6px 16px;
-          font-size: 10px; color: #484848;
-          letter-spacing: 0.1em; text-transform: uppercase;
-          pointer-events: none; z-index: 200;
-          animation: fadeUp 0.2s ease;
-        }
-
-        /* ── Music Player Card (shared local + YT) ── */
-        .music-player {
-          display: flex; flex-direction: column; align-items: stretch; gap: 0;
-          background: #0d0d0d; border: 1px solid #181818;
-          border-radius: 14px; padding: 0;
-          margin-top: 10px; opacity: var(--music-op, 1);
-          transition: all 0.4s ease;
-          width: 320px; max-width: 90vw;
-          overflow: hidden;
-        }
-
-        .mp-track-info {
-          display: flex; align-items: center; gap: 10px;
-          padding: 12px 16px 6px; min-height: 48px;
-        }
-
-        .mp-icon {
-          width: 30px; height: 30px; border-radius: 6px;
-          background: #141414; border: 1px solid #1e1e1e;
-          display: flex; align-items: center; justify-content: center;
-          flex-shrink: 0;
-        }
-
-        .mp-text { flex: 1; overflow: hidden; min-width: 0; }
-
-        .mp-title {
-          font-size: 11px; font-weight: 600; color: #888;
-          letter-spacing: 0.02em; white-space: nowrap; overflow: hidden;
-          display: block; position: relative;
-        }
-        .mp-title-inner { display: inline-block; }
-        .mp-title.scrolling .mp-title-inner { animation: marquee 12s linear infinite; padding-right: 60px; }
-
-        .mp-subtitle {
-          font-size: 9px; color: #2e2e2e; margin-top: 2px;
-          letter-spacing: 0.06em; text-transform: uppercase;
-          white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-        }
-
-        /* Track selector row (local only) */
-        .mp-track-row {
-          display: flex; align-items: center; gap: 2px;
-          padding: 4px 12px; overflow-x: auto;
-          scrollbar-width: none;
-        }
-        .mp-track-row::-webkit-scrollbar { display: none; }
-
-        .mp-track-btn {
-          background: none; border: 1px solid transparent; cursor: pointer;
-          color: #383838; font-size: 9px; font-weight: 700;
-          text-transform: uppercase; letter-spacing: 0.05em;
-          padding: 3px 8px; border-radius: 10px; transition: all 0.2s;
-          white-space: nowrap; flex-shrink: 0;
-        }
-        .mp-track-btn.active { color: var(--accent); border-color: var(--accent-glow); background: #121212; }
-        .mp-track-btn:hover:not(.active) { color: #777; }
-
-        /* Progress bar */
-        .mp-progress {
-          display: flex; align-items: center; gap: 8px;
-          padding: 2px 16px 4px;
-        }
-        .mp-progress-track {
-          flex: 1; height: 3px; background: #1a1a1a;
-          border-radius: 2px; cursor: pointer; position: relative;
-          transition: height 0.15s;
-        }
-        .mp-progress-track:hover { height: 5px; }
-        .mp-progress-fill {
-          position: absolute; top: 0; left: 0; height: 100%;
-          border-radius: 2px; transition: width 0.9s linear;
-        }
-        .mp-time {
-          font-family: 'JetBrains Mono', monospace;
-          font-size: 9px; color: #252525;
-          min-width: 28px; text-align: center; flex-shrink: 0;
-        }
-
-        /* Controls row */
-        .mp-controls {
-          display: flex; align-items: center; justify-content: center;
-          gap: 6px; padding: 4px 16px 10px;
-        }
-        .mp-ctrl-btn {
-          background: none; border: none; cursor: pointer;
-          color: #363636; padding: 5px; display: flex;
-          align-items: center; justify-content: center;
-          border-radius: 50%; transition: all 0.2s;
-        }
-        .mp-ctrl-btn:hover { color: #888; }
-        .mp-play-btn {
-          width: 34px; height: 34px;
-          background: #161616; border: 1px solid #262626;
-          border-radius: 50%; cursor: pointer; display: flex;
-          align-items: center; justify-content: center;
-          transition: all 0.2s; color: #555;
-        }
-        .mp-play-btn:hover { border-color: #444; color: #aaa; }
-        .mp-vol-row {
-          display: flex; align-items: center; gap: 6px;
-        }
-
-        .volume-slider {
-          -webkit-appearance: none; width: 58px; height: 2px;
-          background: #1a1a1a; border-radius: 1px; outline: none;
-        }
-        .volume-slider::-webkit-slider-thumb {
-          -webkit-appearance: none; width: 8px; height: 8px;
-          border-radius: 50%; background: #444; cursor: pointer;
-          transition: background 0.2s;
-        }
-        .volume-slider::-webkit-slider-thumb:hover { background: var(--accent); }
-
-        /* Stats Dashboard Specific */
-        .stats-card {
-          background: #0d0d0d; border: 1px solid #181818;
-          border-radius: 8px; padding: 20px;
-          display: flex; flex-direction: column; gap: 12px;
-          position: relative;
-        }
-        @media (max-width: 600px) {
-          .stats-card { padding: 15px; }
-          .stats-value { font-size: 20px; }
-          .heatmap-cell { min-width: 6px; }
-        }
-        .stats-title { font-size: 11px; font-weight: 700; color: #444; text-transform: uppercase; letter-spacing: 0.1em; }
-        .stats-value { font-size: 24px; font-weight: 300; color: #d8d8d8; font-family: 'JetBrains Mono', monospace; }
-        .stats-label { font-size: 10px; color: #2a2a2a; text-transform: uppercase; letter-spacing: 0.05em; }
-
-        .heatmap { 
-          display: grid; 
-          gap: 2px; 
-          width: 100%; 
-          min-width: 0;
-          overflow-x: auto;
-          scrollbar-width: none;
-        }
-        .heatmap::-webkit-scrollbar { display: none; }
-        .heatmap-cell { 
-          aspect-ratio: 1/1; 
-          border-radius: 1px; 
-          background: #111; 
-          min-width: 8px;
-        }
-        .heatmap-cell.level-1 { background: var(--h-level-1, #0e4429); }
-        .heatmap-cell.level-2 { background: var(--h-level-2, #006d32); }
-        .heatmap-cell.level-3 { background: var(--h-level-3, #26a641); }
-        .heatmap-cell.level-4 { background: var(--h-level-4, #39d353); }
-
-        .btn-stats-tab {
-          background: #111; border: 1px solid #222; color: #555;
-          padding: 4px 12px; border-radius: 4px; font-size: 10px;
-          text-transform: uppercase; letter-spacing: 0.05em; cursor: pointer;
-          transition: all 0.2s;
-        }
-        .btn-stats-tab.active { background: #222; border-color: #444; color: #d8d8d8; }
-
-        .peak-stat {
-          display: flex; align-items: baseline; gap: 8px;
-        }
-        .peak-hour { font-size: 18px; color: #d8d8d8; font-family: 'JetBrains Mono', monospace; }
-        .peak-count { font-size: 11px; color: #444; }
-
-        /* Mini player in stats view */
-        .mini-music-player {
-          font-family: 'Syne', sans-serif;
-        }
-      `}</style>
 
       {/* Breathing bg glow for breaks */}
       {amb.breathe && (
@@ -3239,7 +2677,7 @@ export default function PomodoroApp() {
           width: 1,
           height: 1,
           overflow: "hidden",
-          visibility: "hidden",
+          opacity: 0,
           pointerEvents: "none",
           zIndex: -1,
         }}
@@ -3273,7 +2711,23 @@ export default function PomodoroApp() {
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
                     <span className="stats-label">Time</span>
                     <span className="stats-value" style={{ fontSize: 20 }}>
-                      {Math.floor(history.filter(s => s.completedAt.startsWith(new Date().toISOString().slice(0, 10)) && s.type === "work").reduce((acc, s) => acc + (parseFloat(s.duration) || 0), 0) / 60)}h {Math.round(history.filter(s => s.completedAt.startsWith(new Date().toISOString().slice(0, 10)) && s.type === "work").reduce((acc, s) => acc + (parseFloat(s.duration) || 0), 0) % 60)}m
+                      {Math.floor(todayFocusMins / 60)}h {Math.round(todayFocusMins % 60)}m
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span className="stats-label">Break cycle</span>
+                    <span style={{ display: "flex", gap: 4 }} aria-label={`${pomodoroCount} of 4 focus sessions`}>
+                      {[0, 1, 2, 3].map((index) => (
+                        <span
+                          key={index}
+                          style={{
+                            width: 5,
+                            height: 5,
+                            borderRadius: "50%",
+                            background: index < pomodoroCount ? accent : "#1c1c1c",
+                          }}
+                        />
+                      ))}
                     </span>
                   </div>
                   <div style={{ marginTop: 8 }}>
@@ -3482,6 +2936,24 @@ export default function PomodoroApp() {
                 </button>
 
                 <button
+                  className="btn-icon chrome"
+                  style={{ color: "#2e2e2e", opacity: chromeOp }}
+                  onClick={addFiveMinutes}
+                  aria-label="Add five minutes"
+                  title="Add five minutes"
+                >
+                  <span
+                    style={{
+                      fontFamily: "'JetBrains Mono', monospace",
+                      fontSize: 11,
+                      fontWeight: 700,
+                    }}
+                  >
+                    +5
+                  </span>
+                </button>
+
+                <button
                   className="btn-primary"
                   onClick={toggleRunning}
                   style={{
@@ -3496,8 +2968,10 @@ export default function PomodoroApp() {
                 <button
                   className="btn-icon chrome"
                   style={{ color: "#2e2e2e", opacity: chromeOp }}
-                  onClick={() => isRunning && handleSessionEnd(true)}
-                  aria-label="Skip session"
+                  onClick={() =>
+                    mode === "work" ? handleSessionEnd(true) : skipBreak()
+                  }
+                  aria-label={mode === "work" ? "Skip focus session" : "Skip break"}
                 >
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
                     <polygon points="5 4 15 12 5 20 5 4" />
@@ -3541,7 +3015,11 @@ export default function PomodoroApp() {
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {focusTasks.map((task, index) => (
                     <div key={task.id} className="task-item">
-                      <div
+                      <button
+                        type="button"
+                        role="checkbox"
+                        aria-checked={task.completed}
+                        aria-label={`Mark ${task.text || "task"} ${task.completed ? "incomplete" : "complete"}`}
                         className={`task-checkbox ${task.completed ? "completed" : ""}`}
                         onClick={() => handleToggleTask(task.id)}
                       >
@@ -3550,7 +3028,7 @@ export default function PomodoroApp() {
                             <polyline points="20 6 9 17 4 12" />
                           </svg>
                         )}
-                      </div>
+                      </button>
                       <input
                         className={`task-input ${task.completed ? "completed" : ""}`}
                         placeholder={index === 0 ? "Focus task..." : "Next task..."}
@@ -3559,7 +3037,11 @@ export default function PomodoroApp() {
                         onKeyDown={(e) => handleTaskKeyDown(e, task.id, index)}
                       />
                       {focusTasks.length > 1 && (
-                        <button className="task-delete" onClick={() => handleRemoveTask(task.id)}>
+                        <button
+                          className="task-delete"
+                          aria-label={`Remove task ${task.text || index + 1}`}
+                          onClick={() => handleRemoveTask(task.id)}
+                        >
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                             <line x1="18" y1="6" x2="6" y2="18" />
                             <line x1="6" y1="6" x2="18" y2="18" />
@@ -3656,6 +3138,70 @@ export default function PomodoroApp() {
                     </button>
                   </div>
                 </div>
+
+                {/* Progress / seek row (both local and YouTube) */}
+                <div className="mp-progress-row" style={{ padding: "0 14px 8px" }}>
+                  {isYt && (
+                    <>
+                      <button
+                        className="mp-ctrl-btn"
+                        onClick={ytPrevTrack}
+                        aria-label="Previous track"
+                        title="Previous track"
+                      >
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+                          <path d="M6 5h2v14H6zm3 7 9-7v14z" />
+                        </svg>
+                      </button>
+                      <button
+                        className="mp-ctrl-btn"
+                        onClick={ytNextTrack}
+                        aria-label="Next track"
+                        title="Next track"
+                      >
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+                          <path d="M16 5h2v14h-2zM6 5l9 7-9 7z" />
+                        </svg>
+                      </button>
+                    </>
+                  )}
+                  <span className="mp-time">{fmtTime(currentTimeSec)}</span>
+                  <div
+                    className="mp-seek"
+                    role="slider"
+                    tabIndex={0}
+                    aria-label="Seek music"
+                    aria-valuemin={0}
+                    aria-valuemax={Math.round(durationSec) || 0}
+                    aria-valuenow={Math.round(currentTimeSec) || 0}
+                    onClick={(event) => {
+                      const rect = event.currentTarget.getBoundingClientRect();
+                      seekMusic(
+                        Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
+                      );
+                    }}
+                    onKeyDown={(event) => {
+                      if (!durationSec) return;
+                      if (event.key === "ArrowRight") {
+                        seekMusic(Math.min(1, (currentTimeSec + 5) / durationSec));
+                      } else if (event.key === "ArrowLeft") {
+                        seekMusic(Math.max(0, (currentTimeSec - 5) / durationSec));
+                      }
+                    }}
+                  >
+                    <div
+                      className="mp-seek-fill"
+                      style={{
+                        width:
+                          durationSec > 0
+                            ? `${Math.min(100, (currentTimeSec / durationSec) * 100)}%`
+                            : "0%",
+                      }}
+                    />
+                  </div>
+                  <span className="mp-time">{fmtTime(durationSec)}</span>
+                </div>
+
                 {/* Track Selector for local mode */}
                 {!isYt && (
                   <div className="mp-track-row" style={{ padding: "0 14px 10px", justifyContent: "flex-start", gap: 4 }}>
@@ -3682,6 +3228,7 @@ export default function PomodoroApp() {
               subjectDot={subjectDot}
               onClearAllData={isClearingData ? null : clearAllData}
               onClearToday={isClearingData ? null : clearTodayData}
+              onExportAll={exportAllHistory}
             />
             {/* Mini music player shown at bottom of Stats view when music is active */}
             {hasMusicActive && (
@@ -3712,7 +3259,7 @@ export default function PomodoroApp() {
         <button
           className="btn-icon"
           style={{ position: "absolute", top: 16, right: 16, color: "#333" }}
-          onClick={() => setShowSettings(false)}
+          onClick={closeSettings}
         >
           <svg
             width="14"
@@ -4082,7 +3629,7 @@ export default function PomodoroApp() {
 
       {showSettings && (
         <div
-          onClick={() => setShowSettings(false)}
+          onClick={closeSettings}
           style={{
             position: "fixed",
             inset: 0,
